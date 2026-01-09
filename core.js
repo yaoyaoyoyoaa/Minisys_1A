@@ -1,10 +1,10 @@
 /**
- * MiniSys-1A Assembler Core - Pro Version (57条指令全支持)
- * 适配：Step 1-4 增加的所有硬件指令 (乘除法, 逻辑立即数, 高级分支等)
+ * MiniSys-1A Assembler Core - Fixed Version
+ * 修复了 PC 计数逻辑，解决了 .text 等伪指令导致的地址错位问题
  */
 const fs = require('fs');
 
-// 寄存器映射 (保持不变)
+// 寄存器映射
 const regMap = {
     zero: 0, at: 1, v0: 2, v1: 3, a0: 4, a1: 5, a2: 6, a3: 7,
     t0: 8,   t1: 9,  t2: 10, t3: 11, t4: 12, t5: 13, t6: 14, t7: 15,
@@ -29,7 +29,6 @@ function parseReg(t) {
 function parseImm(t) {
     if (!t) return 0;
     t = t.trim();
-    // 支持负数和十六进制
     return t.startsWith('0x') ? parseInt(t, 16) : parseInt(t, 10);
 }
 
@@ -41,18 +40,24 @@ function assemblerCore(source) {
     // --- 第一遍扫描：计算标签地址 ---
     let tempPc = 0;
     lines.forEach(line => {
-        line = line.split('#')[0].trim();
+        line = line.split('#')[0].trim(); // 去注释
         if (!line) return;
+        
+        // 处理标签
         if (line.includes(':')) {
             const parts = line.split(':');
             const label = parts[0].trim();
             labels[label] = tempPc;
-            line = parts[1].trim();
+            line = parts[1].trim(); // 保留标签后的指令
         }
         if (!line) return;
         
-        const parts = line.split(/\s+/);
+        const parts = line.replace(/,/g, ' ').split(/\s+/);
         const op = parts[0].toUpperCase();
+        
+        // [修复] 忽略伪指令，不增加 PC
+        if (op.startsWith('.')) return; 
+
         // 伪指令特殊处理
         if (op === 'LI') tempPc += 4; 
         else tempPc += 4;
@@ -63,77 +68,82 @@ function assemblerCore(source) {
     let machineCodes = [];
 
     lines.forEach(line => {
-        line = line.split('#')[0].trim(); // 去注释
-        if (line.includes(':')) line = line.split(':')[1].trim(); // 去标签
+        line = line.split('#')[0].trim();
+        if (line.includes(':')) line = line.split(':')[1].trim();
         if (!line) return;
 
         const parts = line.replace(/,/g, ' ').split(/\s+/);
         const op = parts[0].toUpperCase();
 
+        // [修复] 忽略伪指令
+        if (op.startsWith('.')) return;
+
+        let generated = false; // 标记是否生成了指令
+
         try {
             switch (op) {
                 // === 伪指令 ===
-                case 'LI': { // LI $t0, 100 -> ADDIU $t0, $0, 100
+                case 'LI': { 
                     const rt = parseReg(parts[1]);
                     const imm = parseImm(parts[2]);
                     machineCodes.push(encodeI(0x09, 0, rt, imm)); 
+                    generated = true;
                     break;
                 }
-                case 'MOVE': { // MOVE rd, rs -> ADDU rd, rs, $0
+                case 'MOVE': { 
                     const rd = parseReg(parts[1]);
                     const rs = parseReg(parts[2]);
                     machineCodes.push(encodeR(rs, 0, rd, 0, 0x21)); 
+                    generated = true;
                     break;
                 }
-                case 'NOP': machineCodes.push(0); break;
+                case 'NOP': machineCodes.push(0); generated = true; break;
 
-                // === R-Type 基础算术逻辑 ===
-                case 'ADD':  machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x20)); break;
-                case 'ADDU': machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x21)); break;
-                case 'SUB':  machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x22)); break;
-                case 'SUBU': machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x23)); break;
-                case 'AND':  machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x24)); break;
-                case 'OR':   machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x25)); break;
-                case 'XOR':  machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x26)); break;
-                case 'NOR':  machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x27)); break; // [新增]
-                case 'SLT':  machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x2A)); break;
-                case 'SLTU': machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x2B)); break; // [新增]
+                // === R-Type ===
+                case 'ADD':  machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x20)); generated = true; break;
+                case 'ADDU': machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x21)); generated = true; break;
+                case 'SUB':  machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x22)); generated = true; break;
+                case 'SUBU': machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x23)); generated = true; break;
+                case 'AND':  machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x24)); generated = true; break;
+                case 'OR':   machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x25)); generated = true; break;
+                case 'XOR':  machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x26)); generated = true; break;
+                case 'NOR':  machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x27)); generated = true; break;
+                case 'SLT':  machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x2A)); generated = true; break;
+                case 'SLTU': machineCodes.push(encodeR(parseReg(parts[2]), parseReg(parts[3]), parseReg(parts[1]), 0, 0x2B)); generated = true; break;
 
-                // === R-Type 移位 ===
-                // SLL rd, rt, shamt
-                case 'SLL':  machineCodes.push(encodeR(0, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]), 0x00)); break;
-                case 'SRL':  machineCodes.push(encodeR(0, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]), 0x02)); break;
-                case 'SRA':  machineCodes.push(encodeR(0, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]), 0x03)); break;
-                // SLLV rd, rt, rs (注意MIPS定义: sllv rd, rt, rs -> shift rt by rs)
-                case 'SLLV': machineCodes.push(encodeR(parseReg(parts[3]), parseReg(parts[2]), parseReg(parts[1]), 0, 0x04)); break; // [新增]
-                case 'SRLV': machineCodes.push(encodeR(parseReg(parts[3]), parseReg(parts[2]), parseReg(parts[1]), 0, 0x06)); break; // [新增]
-                case 'SRAV': machineCodes.push(encodeR(parseReg(parts[3]), parseReg(parts[2]), parseReg(parts[1]), 0, 0x07)); break; // [新增]
+                // 移位
+                case 'SLL':  machineCodes.push(encodeR(0, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]), 0x00)); generated = true; break;
+                case 'SRL':  machineCodes.push(encodeR(0, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]), 0x02)); generated = true; break;
+                case 'SRA':  machineCodes.push(encodeR(0, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]), 0x03)); generated = true; break;
+                case 'SLLV': machineCodes.push(encodeR(parseReg(parts[3]), parseReg(parts[2]), parseReg(parts[1]), 0, 0x04)); generated = true; break;
+                case 'SRLV': machineCodes.push(encodeR(parseReg(parts[3]), parseReg(parts[2]), parseReg(parts[1]), 0, 0x06)); generated = true; break;
+                case 'SRAV': machineCodes.push(encodeR(parseReg(parts[3]), parseReg(parts[2]), parseReg(parts[1]), 0, 0x07)); generated = true; break;
 
-                // === R-Type 跳转 ===
-                case 'JR':   machineCodes.push(encodeR(parseReg(parts[1]), 0, 0, 0, 0x08)); break;
-                case 'JALR': machineCodes.push(encodeR(parseReg(parts[1]), 0, parseReg(parts[2])||31, 0, 0x09)); break; // [新增] JALR rs, rd
+                // 跳转
+                case 'JR':   machineCodes.push(encodeR(parseReg(parts[1]), 0, 0, 0, 0x08)); generated = true; break;
+                case 'JALR': machineCodes.push(encodeR(parseReg(parts[1]), 0, parseReg(parts[2])||31, 0, 0x09)); generated = true; break;
 
-                // === R-Type 乘除法 (HILO) ===
-                case 'MULT': machineCodes.push(encodeR(parseReg(parts[1]), parseReg(parts[2]), 0, 0, 0x18)); break; // [新增]
-                case 'MULTU':machineCodes.push(encodeR(parseReg(parts[1]), parseReg(parts[2]), 0, 0, 0x19)); break; // [新增]
-                case 'DIV':  machineCodes.push(encodeR(parseReg(parts[1]), parseReg(parts[2]), 0, 0, 0x1A)); break; // [新增]
-                case 'DIVU': machineCodes.push(encodeR(parseReg(parts[1]), parseReg(parts[2]), 0, 0, 0x1B)); break; // [新增]
-                case 'MFHI': machineCodes.push(encodeR(0, 0, parseReg(parts[1]), 0, 0x10)); break; // [新增] MFHI rd
-                case 'MFLO': machineCodes.push(encodeR(0, 0, parseReg(parts[1]), 0, 0x12)); break; // [新增] MFLO rd
-                case 'MTHI': machineCodes.push(encodeR(parseReg(parts[1]), 0, 0, 0, 0x11)); break; // [新增] MTHI rs
-                case 'MTLO': machineCodes.push(encodeR(parseReg(parts[1]), 0, 0, 0, 0x13)); break; // [新增] MTLO rs
+                // 乘除 & HILO
+                case 'MULT': machineCodes.push(encodeR(parseReg(parts[1]), parseReg(parts[2]), 0, 0, 0x18)); generated = true; break;
+                case 'MULTU':machineCodes.push(encodeR(parseReg(parts[1]), parseReg(parts[2]), 0, 0, 0x19)); generated = true; break;
+                case 'DIV':  machineCodes.push(encodeR(parseReg(parts[1]), parseReg(parts[2]), 0, 0, 0x1A)); generated = true; break;
+                case 'DIVU': machineCodes.push(encodeR(parseReg(parts[1]), parseReg(parts[2]), 0, 0, 0x1B)); generated = true; break;
+                case 'MFHI': machineCodes.push(encodeR(0, 0, parseReg(parts[1]), 0, 0x10)); generated = true; break;
+                case 'MFLO': machineCodes.push(encodeR(0, 0, parseReg(parts[1]), 0, 0x12)); generated = true; break;
+                case 'MTHI': machineCodes.push(encodeR(parseReg(parts[1]), 0, 0, 0, 0x11)); generated = true; break;
+                case 'MTLO': machineCodes.push(encodeR(parseReg(parts[1]), 0, 0, 0, 0x13)); generated = true; break;
 
-                // === I-Type 计算 ===
-                case 'ADDI': machineCodes.push(encodeI(0x08, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]))); break;
-                case 'ADDIU':machineCodes.push(encodeI(0x09, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]))); break;
-                case 'ANDI': machineCodes.push(encodeI(0x0C, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]))); break; // [新增]
-                case 'ORI':  machineCodes.push(encodeI(0x0D, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]))); break;
-                case 'XORI': machineCodes.push(encodeI(0x0E, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]))); break; // [新增]
-                case 'LUI':  machineCodes.push(encodeI(0x0F, 0, parseReg(parts[1]), parseInt(parts[2]))); break;
-                case 'SLTI': machineCodes.push(encodeI(0x0A, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]))); break; // [新增]
-                case 'SLTIU':machineCodes.push(encodeI(0x0B, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]))); break; // [新增]
+                // === I-Type ===
+                case 'ADDI': machineCodes.push(encodeI(0x08, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]))); generated = true; break;
+                case 'ADDIU':machineCodes.push(encodeI(0x09, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]))); generated = true; break;
+                case 'ANDI': machineCodes.push(encodeI(0x0C, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]))); generated = true; break;
+                case 'ORI':  machineCodes.push(encodeI(0x0D, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]))); generated = true; break;
+                case 'XORI': machineCodes.push(encodeI(0x0E, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]))); generated = true; break;
+                case 'LUI':  machineCodes.push(encodeI(0x0F, 0, parseReg(parts[1]), parseInt(parts[2]))); generated = true; break;
+                case 'SLTI': machineCodes.push(encodeI(0x0A, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]))); generated = true; break;
+                case 'SLTIU':machineCodes.push(encodeI(0x0B, parseReg(parts[2]), parseReg(parts[1]), parseInt(parts[3]))); generated = true; break;
 
-                // === Load/Store ===
+                // Load/Store
                 case 'LW': case 'LB': case 'LBU': case 'LH': case 'LHU': 
                 case 'SW': case 'SB': case 'SH': {
                     const map = { 
@@ -143,19 +153,18 @@ function assemblerCore(source) {
                     const match = parts[2].match(/(-?\d+|0x[0-9a-fA-F]+)\((\$\w+)\)/);
                     if(match) {
                         machineCodes.push(encodeI(map[op], parseReg(match[2]), parseReg(parts[1]), parseImm(match[1])));
+                        generated = true;
                     }
                     break;
                 }
 
-                // === Branch (普通) ===
+                // Branch
                 case 'BEQ': 
                 case 'BNE': 
-                case 'BLEZ': // [新增] BLEZ rs, offset (rt=0)
-                case 'BGTZ': // [新增] BGTZ rs, offset (rt=0)
+                case 'BLEZ': 
+                case 'BGTZ': 
                 {
                     const label = parts[op.startsWith('B') && parts.length===4 ? 3 : 2]; 
-                    // BGTZ/BLEZ 只有两个参数: rs, label
-                    // BEQ/BNE 有三个参数: rs, rt, label
                     relocations.push({ type: op, pc: pc, label: label });
                     
                     let opcode = 0; let rt = 0; let rs = 0;
@@ -164,15 +173,12 @@ function assemblerCore(source) {
                     else if (op === 'BLEZ') { opcode = 0x06; rs = parseReg(parts[1]); rt = 0; }
                     else if (op === 'BGTZ') { opcode = 0x07; rs = parseReg(parts[1]); rt = 0; }
 
-                    machineCodes.push(encodeI(opcode, rs, rt, 0)); // 偏移量由 Linker 填
+                    machineCodes.push(encodeI(opcode, rs, rt, 0)); 
+                    generated = true;
                     break;
                 }
 
-                // === Branch (REGIMM 类: BLTZ, BGEZ) ===
-                case 'BLTZ': // rt=0
-                case 'BGEZ': // rt=1
-                case 'BLTZAL': // rt=16
-                case 'BGEZAL': // rt=17
+                case 'BLTZ': case 'BGEZ': case 'BLTZAL': case 'BGEZAL':
                 {
                     const label = parts[2];
                     relocations.push({ type: op, pc: pc, label: label });
@@ -182,26 +188,30 @@ function assemblerCore(source) {
                     if (op === 'BLTZAL') rt = 16;
                     if (op === 'BGEZAL') rt = 17;
                     machineCodes.push(encodeI(0x01, parseReg(parts[1]), rt, 0));
+                    generated = true;
                     break;
                 }
 
-                // === J-Type ===
+                // J-Type
                 case 'J':   
                 case 'JAL': {
                     const label = parts[1];
                     relocations.push({ type: op, pc: pc, label: label });
                     machineCodes.push(encodeJ(op==='J'?0x02:0x03, 0)); 
+                    generated = true;
                     break;
                 }
 
-                // === CP0 ===
-                case 'MTC0': machineCodes.push(((0x10 << 26) | (0x04 << 21) | (parseReg(parts[1]) << 16) | (parseImm(parts[2]) << 11)) >>> 0); break;
-                case 'MFC0': machineCodes.push(((0x10 << 26) | (0x00 << 21) | (parseReg(parts[1]) << 16) | (parseImm(parts[2]) << 11)) >>> 0); break;
-                case 'ERET': machineCodes.push(0x42000018); break;
+                // CP0
+                case 'MTC0': machineCodes.push(((0x10 << 26) | (0x04 << 21) | (parseReg(parts[1]) << 16) | (parseImm(parts[2]) << 11)) >>> 0); generated = true; break;
+                case 'MFC0': machineCodes.push(((0x10 << 26) | (0x00 << 21) | (parseReg(parts[1]) << 16) | (parseImm(parts[2]) << 11)) >>> 0); generated = true; break;
+                case 'ERET': machineCodes.push(0x42000018); generated = true; break;
 
                 default: break;
             }
-            pc += 4;
+            // [修复] 只有生成了代码，才增加 PC
+            if (generated) pc += 4;
+            
         } catch (e) {
             console.error(`Error at line: ${line} - ${e.message}`);
         }
