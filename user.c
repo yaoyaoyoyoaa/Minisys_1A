@@ -8,7 +8,13 @@ void main(void)
     int num;
     int sum;
     int i;
+    int key_addr;
+    int seg_addr;
+    int key_val;
     
+    // 必须使用讲义规定的新地址
+    key_addr = $0xFFFFFC10; 
+    seg_addr = $0xFFFFFC00; // 写低4位地址即可，32位写会覆盖高位
     // 2. 初始化变量
     last_key = 0;
     num = 0;

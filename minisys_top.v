@@ -7,14 +7,18 @@ module minisys_top(
     // --- 外部硬件接口 (连接到开发板引脚) ---
     input  wire        uart_rx,      // 串口接收
     output wire        uart_tx,      // 串口发送
-    output wire [31:0] seven_seg,    // 8位七段数码管 (映射到 0xFFFF0010)
-    input  wire [31:0] switches,     // 拨码开关 (映射到 0xFFFF0014)
-    output wire [15:0] leds,         // 16位 LED (映射到 0xFFFF0020)
-    output wire        pwm_out,      // PWM 输出 (映射到 0xFFFF0040)
+
+    // 数码管 (修改点)
+    output wire [7:0]  seg_out, // CA-DP
+    output wire [7:0]  an_out,  // AN7-AN0
     
-    // [新增] 4x4 矩阵键盘接口
-    input  wire [3:0]  col,          // 键盘列输入 (映射到 0xFFFFFC1x)
-    output wire [3:0]  row           // 键盘行扫描输出
+    input  wire [23:0] switches,// 24位开关
+    output wire [23:0] leds,    // 24位LED
+    output wire        pwm_out,
+    
+    // 键盘
+    input  wire [3:0]  col,
+    output wire [3:0]  row
 );
 
     // =========================================================================
@@ -107,29 +111,30 @@ module minisys_top(
     // [新增] 定义多位定时器中断向量 (Timer1 + Timer2)
     wire [1:0] timer_int_vec;
 
+    // MMIO 实例化 (更新连接)
     mmio_if u_mmio(
+        // ... (clk, rst, 总线接口保持不变) ...
         .clk(clk),
-        .rst(sys_rst),           // [修改] 使用合并后的系统复位
-        .we(dmem_we && is_mmio), // 只有地址匹配时才写
+        .rst(sys_rst),
+        .we(dmem_we && is_mmio),
         .be(dmem_wstrb),
         .addr(dmem_addr),
         .wdata(dmem_wdata),
         .rdata(mmio_rdata),
+
+        // 外设连接更新
+        .switches(switches),
+        .led_out(leds),
         
-        // 外部引脚
-        .uart_rx_ready(1'b0), // 简化处理
-        .uart_tx_en(),
-        .uart_tx_data(uart_tx_data_w), // 如果需要连接 tx 引脚，需增加 uart 发送模块，此处仅保留接口
-        .disp_data(seven_seg),
-        .switch_data(switches),
-        .led_out(leds),       
+        .seg_out(seg_out), // 连接到顶层引脚
+        .an_out(an_out),   // 连接到顶层引脚
+        
+        .col(col),
+        .row(row),
+        
         .pwm_out(pwm_out),
-        
-        // [新增] 键盘与高级系统接口
-        .col(col),               // 连接到顶层键盘输入
-        .row(row),               // 连接到顶层键盘扫描输出
-        .sys_rst_req(sys_rst_req), // 接收看门狗复位请求
-        .timer_int(timer_int_vec)  // 接收双定时器中断 [1:0]
+        .wdg_rst_req(sys_rst_req),
+        .timer_int(timer_int_vec)
     );
 
     // 简单的 UART TX 占位 (如果有 UART 发送模块需在此实例化)
