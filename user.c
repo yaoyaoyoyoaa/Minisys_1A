@@ -1,61 +1,91 @@
-// user.c - 严格符合 Mini C 规范的计算器
 void main(void)
 {
-    // 1. 所有变量必须在开头声明 (禁止赋值)
+    // 1. 变量声明
     int is_pressed;
     int key_val;
-    int last_key;
-    int num;
-    int sum;
-    int i;
-    int key_addr;
-    int seg_addr;
-    int key_val;
-    
-    // 必须使用讲义规定的新地址
-    key_addr = $0xFFFFFC10; 
-    seg_addr = $0xFFFFFC00; // 写低4位地址即可，32位写会覆盖高位
-    // 2. 初始化变量
-    last_key = 0;
+    int current_val; // 当前按下的键
+    int num;         // 屏幕显示的数字
+    int sum;         // 累加结果
+    int i;           // 延时计数器
+
+    // 2. 硬件地址定义 (根据你的手册)
+    // 键盘状态: 0xFFFFFC12 (1=按下, 0=没按)
+    // 键盘键值: 0xFFFFFC10
+    // 数码管低位: 0xFFFFFC00
+    // 数码管高位: 0xFFFFFC02
+
+    // 3. 初始化: 上电先显示 12345678 验证系统
+    $0xFFFFFC02 = 0x1234; 
+    $0xFFFFFC00 = 0x5678;
+
     num = 0;
     sum = 0;
+    current_val = 0;
 
-    // 3. 主循环
+    // 4. 主循环
     while(1)
     {
-        // $0xfffffc12 是键盘状态 (bit0=1 按下)
+        // ------------------------------------------
+        // 第一步：等待按键按下
+        // ------------------------------------------
         is_pressed = $0xfffffc12;
-        
         if (is_pressed) 
         {
-            // $0xfffffc10 是键盘键值
-            key_val = $0xfffffc10;
-            
-            if (key_val != last_key)
+            // ------------------------------------------
+            // 第二步：软件消抖 (延时去毛刺)
+            // ------------------------------------------
+            i = 100000; // 延时久一点
+            while(i > 0) i = i - 1;
+
+            // 再次确认是否真的按下了
+            is_pressed = $0xfffffc12;
+            if (is_pressed)
             {
-                if (key_val < 10) 
+                // 读取键值
+                current_val = $0xfffffc10;
+
+                // ------------------------------------------
+                // 第三步：业务逻辑 (输入与计算)
+                // ------------------------------------------
+                
+                // 如果是数字键 (假设 0-9)
+                if (current_val < 10) 
                 {
-                    num = key_val;
-                    // $0xffff0010 是数码管
-                    $0xffff0010 = num;
+                    num = current_val;
+                    // 立即更新显示
+                    $0xfffffc00 = num; 
+                    $0xfffffc02 = 0; 
                 }
                 
-                // 按下 'A' (10) 键进行加法
-                if (key_val == 10)
+                // 如果是 'A' 键 (假设是 10) -> 加法
+                if (current_val == 10)
                 {
                     sum = sum + num;
-                    $0xffff0010 = sum;
-                    num = 0;
+                    
+                    // 显示结果
+                    $0xfffffc00 = sum; 
+                    $0xfffffc02 = 0; // 暂不处理高位进位
+                    
+                    num = 0; // 清零输入，准备下一次
+                }
+
+                // ------------------------------------------
+                // 第四步：【关键】等待按键抬起 (松手检测)
+                // ------------------------------------------
+                // 只要手没松开，就死循环等待，防止一次按键算多次
+                while(1) 
+                {
+                    is_pressed = $0xfffffc12;
+                    if (is_pressed == 0) 
+                    {
+                        break; // 松手了，跳出等待
+                    }
                 }
                 
-                last_key = key_val;
+                // 松手后再延时一小会儿，防止抬起时的抖动
+                i = 100000;
+                while(i > 0) i = i - 1;
             }
-        }
-        
-        // 延时消抖
-        i = 2000;
-        while(i > 0) {
-            i = i - 1;
         }
     }
 }

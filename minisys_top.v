@@ -1,100 +1,76 @@
 `timescale 1ns / 1ps
-// minisys_top.v - MiniSys-1A SoC 顶层模块 (Updated for Step 5 Requirements)
+// minisys_top.v - 最终完美版 (支持读文件 + 分布式RAM)
 module minisys_top(
-    input  wire        clk,          // 系统时钟 (如 100MHz)
-    input  wire        rst,          // 开发板复位按键 (高有效)
-    
-    // --- 外部硬件接口 (连接到开发板引脚) ---
-    input  wire        uart_rx,      // 串口接收
-    output wire        uart_tx,      // 串口发送
-
-    // 数码管 (修改点)
-    output wire [7:0]  seg_out, // CA-DP
-    output wire [7:0]  an_out,  // AN7-AN0
-    
-    input  wire [23:0] switches,// 24位开关
-    output wire [23:0] leds,    // 24位LED
+    input  wire        clk,
+    input  wire        rst,
+    input  wire        uart_rx,
+    output wire        uart_tx,
+    output wire [7:0]  seg_out, 
+    output wire [7:0]  an_out,
+    input  wire [23:0] switches,
+    output wire [23:0] leds,
     output wire        pwm_out,
-    
-    // 键盘
     input  wire [3:0]  col,
     output wire [3:0]  row
 );
 
-    // =========================================================================
-    // 1. 信号定义与复位逻辑
-    // =========================================================================
-    
-    // [新增] 系统复位逻辑
-    // 真正的系统复位 = 外部按键复位 OR 看门狗复位请求
-    wire sys_rst_req;       // 来自 MMIO 看门狗的复位请求
+    // 1. 信号定义
+    wire [31:0] debug_pc; 
+    wire sys_rst_req;
     wire sys_rst = rst | sys_rst_req;
 
-    // CPU 接口信号
     wire [31:0] imem_addr;
     wire [31:0] imem_rdata;
     
     wire [31:0] dmem_addr;
     wire [31:0] dmem_wdata;
-    wire [31:0] dmem_rdata_cpu; // CPU 读到的最终数据
+    wire [31:0] dmem_rdata_cpu;
     wire        dmem_we;
     wire [3:0]  dmem_wstrb;
-    wire [5:0]  ext_int;        // 外部中断信号
+    wire [5:0]  ext_int;
     
-    // 内存与外设读数据
     wire [31:0] ram_rdata;
     wire [31:0] mmio_rdata;
     
-    // 地址解码信号
-    wire is_mmio = (dmem_addr[31:16] == 16'hFFFF); // 地址 0xFFFFxxxx 访问外设
-    wire is_ram  = (dmem_addr[31:16] == 16'h0000); // 地址 0x0000xxxx 访问 RAM
+    wire is_mmio = (dmem_addr[31:16] == 16'hFFFF);
+    wire is_ram  = (dmem_addr[31:16] == 16'h0000);
 
-    // =========================================================================
-    // 2. CPU 核心实例化
-    // =========================================================================
+    // 2. CPU 核心
     cpu_core u_cpu(
         .clk(clk),
-        .rst(sys_rst),          // [修改] 使用合并后的系统复位
-        .ext_int(ext_int),      // 中断输入
-        
-        // 指令存储器
+        .rst(sys_rst),
+        .ext_int(ext_int),
         .imem_addr(imem_addr),
         .imem_rdata(imem_rdata),
-        
-        // 数据存储器 & IO
         .dmem_addr(dmem_addr),
         .dmem_wdata(dmem_wdata),
         .dmem_we(dmem_we),
         .dmem_wstrb(dmem_wstrb),
-        .dmem_rdata(dmem_rdata_cpu), // 回传选通后的数据
-        
-        .dbg_pc() // 调试端口悬空
+        .dmem_rdata(dmem_rdata_cpu),
+        .dbg_pc(debug_pc) 
     );
 
-    // =========================================================================
-    // 3. 存储器实例化 (哈佛结构)
-    // =========================================================================
+    // =========================================================
+    // 3. 存储器 (最终方案：读文件 + 必胜配置)
+    // =========================================================
     
-    // --- 指令存储器 (ROM) ---
-    // 容量: 64KB (16384 x 32bit)
-    reg [31:0] inst_mem [0:16383];
-    
+    // 【必胜法宝】强制使用分布式 RAM (Distributed RAM)
+    // 这会强制 Vivado 用 LUT 搭建内存，初始化文件绝对能读进去！
+    (* rom_style = "distributed" *)
+    reg [31:0] inst_mem [0:2047]; // 8KB 容量，足够放计算器
+
     initial begin
-        // 在 Vivado 综合时，建议使用 $readmemh 加载初始化文件
-        // $readmemh("program.txt", inst_mem);
+        // 使用文件名读取 (文件请放在工程目录下，或使用绝对路径)
+        $readmemh("program.txt", inst_mem);
     end
-    
-    // 读指令 (字对齐)
-    assign imem_rdata = inst_mem[imem_addr[15:2]];
+
+    // 正常的读内存逻辑
+    assign imem_rdata = inst_mem[imem_addr[12:2]]; // 地址匹配 [0:2047]
 
     // --- 数据存储器 (RAM) ---
-    // 容量: 64KB (16384 x 32bit)
     reg [31:0] data_mem [0:16383];
-
-    // RAM 读逻辑
     assign ram_rdata = data_mem[dmem_addr[15:2]];
 
-    // RAM 写逻辑 (支持字节写)
     always @(posedge clk) begin
         if (dmem_we && is_ram) begin
             if(dmem_wstrb[0]) data_mem[dmem_addr[15:2]][7:0]   <= dmem_wdata[7:0];
@@ -104,16 +80,9 @@ module minisys_top(
         end
     end
 
-    // =========================================================================
-    // 4. MMIO 外设接口实例化
-    // =========================================================================
-    
-    // [新增] 定义多位定时器中断向量 (Timer1 + Timer2)
+    // 4. MMIO 外设
     wire [1:0] timer_int_vec;
-
-    // MMIO 实例化 (更新连接)
     mmio_if u_mmio(
-        // ... (clk, rst, 总线接口保持不变) ...
         .clk(clk),
         .rst(sys_rst),
         .we(dmem_we && is_mmio),
@@ -121,36 +90,30 @@ module minisys_top(
         .addr(dmem_addr),
         .wdata(dmem_wdata),
         .rdata(mmio_rdata),
-
-        // 外设连接更新
         .switches(switches),
-        .led_out(leds),
-        
-        .seg_out(seg_out), // 连接到顶层引脚
-        .an_out(an_out),   // 连接到顶层引脚
-        
+        // .led_out(leds), // LED 断开，留给调试用
+        .seg_out(seg_out), 
+        .an_out(an_out),
         .col(col),
         .row(row),
-        
         .pwm_out(pwm_out),
         .wdg_rst_req(sys_rst_req),
         .timer_int(timer_int_vec)
     );
 
-    // 简单的 UART TX 占位 (如果有 UART 发送模块需在此实例化)
-    wire [7:0] uart_tx_data_w;
-    assign uart_tx = 1'b1; // 默认拉高 (空闲)
-
-    // =========================================================================
-    // 5. 总线多路选择 (Mux) 与 中断连接
-    // =========================================================================
-    
-    // 数据回读选择: 如果地址是 0xFFFFxxxx 则读 MMIO，否则读 RAM
+    assign uart_tx = 1'b1;
     assign dmem_rdata_cpu = is_mmio ? mmio_rdata : ram_rdata;
+    
+    // 依然屏蔽中断，防止你的计算器程序被 Timer0 打断
+    assign ext_int = 6'b0; 
 
-    // 中断连接更新: 
-    // 将 2位 定时器中断连接到 CPU 的 ext_int[1:0]
-    // ext_int[0] = Timer1, ext_int[1] = Timer2
-    assign ext_int = {4'b0, timer_int_vec};
+    // 5. LED 状态指示
+    assign leds[23] = sys_rst; 
+    
+    // 【新签名】中间改成 "0000000" (全灭)，如果看到全灭，说明你切换回读文件模式了
+    assign leds[22:16] = 7'b0000000;   
+    
+    // PC 监控
+    assign leds[15:0] = debug_pc[17:2];
 
 endmodule

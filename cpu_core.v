@@ -31,17 +31,18 @@ module cpu_core(
     reg [31:0] id_ex_pc, id_ex_rs_val, id_ex_rt_val, id_ex_imm;
     reg [4:0]  id_ex_rs, id_ex_rt, id_ex_rd, id_ex_shamt;
     reg [5:0]  id_ex_op, id_ex_fn;
-    
     // ID/EX 控制信号
     reg        id_ex_reg_write, id_ex_mem_to_reg, id_ex_mem_read, id_ex_mem_write;
     reg        id_ex_alu_src, id_ex_reg_dest, id_ex_is_shift;
     reg [3:0]  id_ex_alu_op;
     reg        id_ex_is_mtc0; 
-    reg        id_ex_shift_var; 
+    reg        id_ex_shift_var;
     reg        id_ex_is_link;
+    // [新增] 异常控制信号
+    reg        id_ex_is_syscall, id_ex_is_break;
     
     // [新增 HILO 相关]
-    reg [2:0]  id_ex_hilo_op;   // 控制 HILO 模块的操作
+    reg [2:0]  id_ex_hilo_op; // 控制 HILO 模块的操作
     reg [1:0]  id_ex_hilo_read; // 0=None, 1=Read HI, 2=Read LO
 
     // --- EX/MEM 寄存器 ---
@@ -51,6 +52,8 @@ module cpu_core(
     reg        ex_mem_reg_write, ex_mem_mem_to_reg, ex_mem_mem_read, ex_mem_mem_write;
     reg        ex_mem_is_mtc0;
     reg        ex_mem_is_link;
+    // [新增] 异常控制信号
+    reg        ex_mem_is_syscall, ex_mem_is_break;
 
     // --- MEM/WB 寄存器 ---
     reg [31:0] mem_wb_pc, mem_wb_read_data, mem_wb_alu_res;
@@ -119,28 +122,41 @@ module cpu_core(
     reg [3:0] ctrl_alu_op;
     
     reg       ctrl_imm_zero;  
-    reg       ctrl_shift_var; 
+    reg       ctrl_shift_var;
     reg       ctrl_is_link;   
+    
+    // [新增] 异常控制
+    reg       ctrl_is_syscall, ctrl_is_break;
 
     // [新增] HILO 控制信号
-    reg [2:0] ctrl_hilo_op;   // 0=None, 1=MULT, 2=MULTU, 3=DIV, 4=DIVU, 5=MTHI, 6=MTLO
+    reg [2:0] ctrl_hilo_op; // 0=None, 1=MULT, 2=MULTU, 3=DIV, 4=DIVU, 5=MTHI, 6=MTLO
     reg [1:0] ctrl_hilo_read; // 0=None, 1=MFHI, 2=MFLO
 
     assign is_eret = (id_op == 6'h10 && id_fn == 6'h18 && if_id_instr[25] == 1'b1);
 
     always @* begin
         // 默认复位
-        ctrl_reg_write = 0; ctrl_mem_to_reg = 0; ctrl_mem_read = 0; ctrl_mem_write = 0;
-        ctrl_alu_src = 0; ctrl_reg_dest = 0; ctrl_branch = 0; ctrl_jump = 0;
+        ctrl_reg_write = 0;
+        ctrl_mem_to_reg = 0; ctrl_mem_read = 0; ctrl_mem_write = 0;
+        ctrl_alu_src = 0; ctrl_reg_dest = 0; ctrl_branch = 0;
+        ctrl_jump = 0;
         ctrl_is_shift = 0; ctrl_alu_op = 4'h0; ctrl_is_mtc0 = 0;
-        ctrl_imm_zero = 0; ctrl_shift_var = 0; ctrl_is_link = 0;
+        ctrl_imm_zero = 0; ctrl_shift_var = 0;
+        ctrl_is_link = 0;
         
         ctrl_hilo_op = 3'd0; ctrl_hilo_read = 2'd0;
+        
+        ctrl_is_syscall = 0; ctrl_is_break = 0;
 
         case(id_op)
             // === R-Type ===
             6'h00: begin 
-                if (id_fn != 6'h00 || id_rd != 0 || id_rt != 0) begin
+                // 特殊处理 SYSCALL 和 BREAK (虽然是 R-Type 格式，但无需 rd/rt/rs 非零判断)
+                if (id_fn == 6'h0C) begin // SYSCALL
+                     ctrl_is_syscall = 1;
+                end else if (id_fn == 6'h0D) begin // BREAK
+                     ctrl_is_break = 1;
+                end else if (id_fn != 6'h00 || id_rd != 0 || id_rt != 0) begin
                     ctrl_reg_dest = 1;
                     ctrl_reg_write = 1;
                     case(id_fn)
@@ -165,7 +181,8 @@ module cpu_core(
                         // 跳转
                         6'h08: begin ctrl_jump = 1; ctrl_reg_write = 0; end // JR
                         6'h09: begin // JALR
-                            ctrl_jump = 1; ctrl_is_link = 1; 
+                            ctrl_jump = 1;
+                            ctrl_is_link = 1; 
                             ctrl_reg_dest = 1; ctrl_reg_write = 1; 
                         end
                         
@@ -176,10 +193,12 @@ module cpu_core(
                         6'h1B: begin ctrl_hilo_op = 3'd4; ctrl_reg_write = 0; end // DIVU
                         
                         6'h10: begin // MFHI
-                            ctrl_hilo_read = 2'd1; ctrl_reg_write = 1; ctrl_reg_dest = 1; 
+                            ctrl_hilo_read = 2'd1;
+                            ctrl_reg_write = 1; ctrl_reg_dest = 1; 
                         end
                         6'h12: begin // MFLO
-                            ctrl_hilo_read = 2'd2; ctrl_reg_write = 1; ctrl_reg_dest = 1;
+                            ctrl_hilo_read = 2'd2;
+                            ctrl_reg_write = 1; ctrl_reg_dest = 1;
                         end
                         6'h11: begin // MTHI
                             ctrl_hilo_op = 3'd5; ctrl_reg_write = 0;
@@ -204,11 +223,13 @@ module cpu_core(
 
             // === Load/Store ===
             6'h20, 6'h21, 6'h23, 6'h24, 6'h25: begin 
-                ctrl_alu_src = 1; ctrl_mem_to_reg = 1; ctrl_reg_write = 1; ctrl_mem_read = 1;
+                ctrl_alu_src = 1;
+                ctrl_mem_to_reg = 1; ctrl_reg_write = 1; ctrl_mem_read = 1;
                 ctrl_alu_op = 4'h0;
             end
             6'h28, 6'h29, 6'h2B: begin 
-                ctrl_alu_src = 1; ctrl_mem_write = 1; ctrl_alu_op = 4'h0;
+                ctrl_alu_src = 1;
+                ctrl_mem_write = 1; ctrl_alu_op = 4'h0;
             end
 
             // === Branch ===
@@ -219,7 +240,8 @@ module cpu_core(
             6'h01: begin // REGIMM
                 ctrl_branch = 1;
                 if(id_rt == 5'd16 || id_rt == 5'd17) begin // BLTZAL, BGEZAL
-                     ctrl_is_link = 1; ctrl_reg_write = 1; ctrl_reg_dest = 0; // Link
+                     ctrl_is_link = 1;
+                     ctrl_reg_write = 1; ctrl_reg_dest = 0; // Link
                 end
             end
 
@@ -238,8 +260,7 @@ module cpu_core(
     // --- 寄存器堆 & ID 逻辑 ---
     wire [31:0] reg_rdata1, reg_rdata2;
     wire [31:0] wb_wdata;
-    wire [4:0]  final_wb_dst = mem_wb_is_link ? 5'd31 : mem_wb_dst_reg; 
-
+    wire [4:0]  final_wb_dst = mem_wb_is_link ? 5'd31 : mem_wb_dst_reg;
     regfile u_regfile(
         .clk(clk), .rst(rst),
         .raddr1(id_rs), .raddr2(id_rt),
@@ -248,8 +269,7 @@ module cpu_core(
         .waddr(final_wb_dst), 
         .wdata(wb_wdata)
     );
-
-    // 分支判断 (略微省略，逻辑同上一步 Step 2)
+    // 分支判断
     wire [31:0] branch_op_a = (ex_mem_reg_write && ex_mem_dst_reg != 0 && ex_mem_dst_reg == id_rs) ? ex_mem_alu_res :
                               (mem_wb_reg_write && mem_wb_dst_reg != 0 && mem_wb_dst_reg == id_rs) ? wb_wdata : reg_rdata1;
     wire [31:0] branch_op_b = (ex_mem_reg_write && ex_mem_dst_reg != 0 && ex_mem_dst_reg == id_rt) ? ex_mem_alu_res :
@@ -257,13 +277,13 @@ module cpu_core(
     wire signed [31:0] rs_val_s = branch_op_a;
     wire is_bgez = (id_op == 6'h01) && (id_rt == 5'd1 || id_rt == 5'd17);
     wire is_bltz = (id_op == 6'h01) && (id_rt == 5'd0 || id_rt == 5'd16);
-
+    
     assign branch_taken = ctrl_branch && (
                           (id_op == 6'h04 && branch_op_a == branch_op_b) || 
                           (id_op == 6'h05 && branch_op_a != branch_op_b) || 
                           (id_op == 6'h06 && rs_val_s <= 0) ||              
                           (id_op == 6'h07 && rs_val_s >  0) ||              
-                          (is_bgez && rs_val_s >= 0) ||                     
+                          (is_bgez && rs_val_s >= 0) || 
                           (is_bltz && rs_val_s <  0)                        
                         );
 
@@ -287,6 +307,7 @@ module cpu_core(
             id_ex_op <= 0; id_ex_fn <= 0;
             id_ex_is_link <= 0;
             id_ex_hilo_op <= 0; id_ex_hilo_read <= 0;
+            id_ex_is_syscall <= 0; id_ex_is_break <= 0;
         end else begin
             id_ex_pc <= if_id_pc;
             id_ex_rs_val <= reg_rdata1;
@@ -311,8 +332,11 @@ module cpu_core(
             id_ex_shift_var <= ctrl_shift_var;
             id_ex_is_link   <= ctrl_is_link;
             
-            id_ex_hilo_op   <= ctrl_hilo_op;   // [新增]
-            id_ex_hilo_read <= ctrl_hilo_read; // [新增]
+            id_ex_hilo_op   <= ctrl_hilo_op;
+            id_ex_hilo_read <= ctrl_hilo_read;
+            
+            id_ex_is_syscall <= ctrl_is_syscall;
+            id_ex_is_break   <= ctrl_is_break;
         end
     end
 
@@ -359,7 +383,9 @@ module cpu_core(
 
     always @(posedge clk) begin
         if (rst || mem_exc_occurred) begin
-            ex_mem_reg_write <= 0; ex_mem_mem_write <= 0; ex_mem_is_mtc0 <= 0; ex_mem_is_link <= 0;
+            ex_mem_reg_write <= 0;
+            ex_mem_mem_write <= 0; ex_mem_is_mtc0 <= 0; ex_mem_is_link <= 0;
+            ex_mem_is_syscall <= 0; ex_mem_is_break <= 0;
         end else begin
             ex_mem_pc        <= id_ex_pc;
             ex_mem_alu_res   <= final_ex_result; // 将 HILO 读出值送入流水线，即可复用 Writeback
@@ -372,16 +398,17 @@ module cpu_core(
             ex_mem_mem_write <= id_ex_mem_write;
             ex_mem_is_mtc0   <= id_ex_is_mtc0;
             ex_mem_is_link   <= id_ex_is_link;
+            
+            ex_mem_is_syscall <= id_ex_is_syscall;
+            ex_mem_is_break   <= id_ex_is_break;
         end
     end
 
     // =========================================================================
-    // 5. MEM Stage & 6. WB Stage (保持不变)
+    // 5. MEM Stage
     // =========================================================================
-    // ... 后续代码与之前完全一致，此处不再重复占用篇幅 ...
-    // (仅展示连接部分，确保代码完整性)
-    
     assign dmem_addr = ex_mem_alu_res;
+    // 当发生异常时，禁止写内存，防止破坏现场
     assign dmem_we   = ex_mem_mem_write && !mem_exc_occurred;
 
     reg [31:0] aligned_wdata;
@@ -409,6 +436,10 @@ module cpu_core(
     assign dmem_wdata = aligned_wdata;
     assign dmem_wstrb = aligned_wstrb;
 
+    // 异常检测: 外部中断 OR Syscall OR Break
+    // 注意: Syscall/Break 在 EX 阶段流转到 MEM 阶段触发异常
+    assign mem_exc_occurred = (ext_int != 0) || ex_mem_is_syscall || ex_mem_is_break;
+
     wire [31:0] cp0_data_out;
     cp0_regfile u_cp0 (
         .clk(clk), .rst(rst),
@@ -421,9 +452,12 @@ module cpu_core(
         .data_o(cp0_data_out),
         .epc_o(cp0_epc)
     );
-    assign mem_exc_occurred = (ext_int != 0);
+
     wire [31:0] mem_result_mux = (ex_mem_op == 6'h10) ? cp0_data_out : dmem_rdata;
 
+    // =========================================================================
+    // 6. WB Stage
+    // =========================================================================
     always @(posedge clk) begin
         if (rst || mem_exc_occurred) begin
             mem_wb_reg_write <= 0;
@@ -442,7 +476,7 @@ module cpu_core(
     reg [31:0] final_wb_data;
     always @* begin
         if (mem_wb_is_link) begin
-            final_wb_data = mem_wb_pc + 4; 
+            final_wb_data = mem_wb_pc + 4;
         end else if (mem_wb_mem_to_reg) begin
             case(mem_wb_op)
                 6'h20: begin // LB
@@ -469,7 +503,7 @@ module cpu_core(
                     if (mem_wb_alu_res[1] == 0) final_wb_data = {16'b0, mem_wb_read_data[15:0]};
                     else                        final_wb_data = {16'b0, mem_wb_read_data[31:16]};
                 end
-                default: final_wb_data = mem_wb_read_data; 
+                default: final_wb_data = mem_wb_read_data;
             endcase
         end else begin
             final_wb_data = mem_wb_alu_res;
