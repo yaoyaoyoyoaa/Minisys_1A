@@ -107,13 +107,14 @@ module minisys_top(
     // 依然屏蔽中断，防止你的计算器程序被 Timer0 打断
     assign ext_int = 6'b0; 
 
-    // 5. LED 状态指示
-    assign leds[23] = sys_rst; 
+   // 5. LED 状态指示
+    assign leds[23] = sys_rst;
+    assign leds[22:4] = 0; 
     
-    // 【新签名】中间改成 "0000000" (全灭)，如果看到全灭，说明你切换回读文件模式了
-    assign leds[22:16] = 7'b0000000;   
+    // 【调试核心】将键盘列线 (col) 直接连到 LED[3:0]
+    // 正常情况（上拉生效）：不按键时，col 全为 1，LED[3:0] 应该全亮！
+    // 异常情况（上拉失败）：不按键时，col 悬空为 0，LED[3:0] 全灭！
+    assign leds[3:0] = col; 
     
-    // PC 监控
-    assign leds[15:0] = debug_pc[17:2];
-
+    // assign leds[15:0] = debug_pc[17:2]; // 先注释掉 PC 监控
 endmodule

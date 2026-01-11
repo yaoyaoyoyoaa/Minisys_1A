@@ -71,18 +71,19 @@ set_property -dict {PACKAGE_PIN M13 IOSTANDARD LVCMOS33} [get_ports {leds[21]}]
 set_property -dict {PACKAGE_PIN L13 IOSTANDARD LVCMOS33} [get_ports {leds[22]}]
 set_property -dict {PACKAGE_PIN K17 IOSTANDARD LVCMOS33} [get_ports {leds[23]}]
 
-# --- 4x4 矩阵键盘 ---
-# 对应讲义 图1-4 / 1.4.3节
-# 行线 (Row)
-set_property -dict {PACKAGE_PIN L5 IOSTANDARD LVCMOS33} [get_ports {row[0]}]
-set_property -dict {PACKAGE_PIN J6 IOSTANDARD LVCMOS33} [get_ports {row[1]}]
-set_property -dict {PACKAGE_PIN K6 IOSTANDARD LVCMOS33} [get_ports {row[2]}]
-set_property -dict {PACKAGE_PIN M2 IOSTANDARD LVCMOS33} [get_ports {row[3]}]
-# 列线 (Col)
-set_property -dict {PACKAGE_PIN K3 IOSTANDARD LVCMOS33} [get_ports {col[0]}]
-set_property -dict {PACKAGE_PIN L3 IOSTANDARD LVCMOS33} [get_ports {col[1]}]
-set_property -dict {PACKAGE_PIN J4 IOSTANDARD LVCMOS33} [get_ports {col[2]}]
-set_property -dict {PACKAGE_PIN K4 IOSTANDARD LVCMOS33} [get_ports {col[3]}]
+# --- 4x4 矩阵键盘 (还原为正确方向) ---
+
+# 行线 Row (输出扫描) - 使用 L5, J6...
+set_property -dict {PACKAGE_PIN L5 IOSTANDARD LVCMOS33} [get_ports {row[3]}]
+set_property -dict {PACKAGE_PIN J6 IOSTANDARD LVCMOS33} [get_ports {row[2]}]
+set_property -dict {PACKAGE_PIN K6 IOSTANDARD LVCMOS33} [get_ports {row[1]}]
+set_property -dict {PACKAGE_PIN M2 IOSTANDARD LVCMOS33} [get_ports {row[0]}]
+
+# 列线 Col (输入检测) - 使用 K3, L3... 【必须保留 PULLUP true】
+set_property -dict {PACKAGE_PIN K3 IOSTANDARD LVCMOS33 PULLUP true} [get_ports {col[3]}]
+set_property -dict {PACKAGE_PIN L3 IOSTANDARD LVCMOS33 PULLUP true} [get_ports {col[2]}]
+set_property -dict {PACKAGE_PIN J4 IOSTANDARD LVCMOS33 PULLUP true} [get_ports {col[1]}]
+set_property -dict {PACKAGE_PIN K4 IOSTANDARD LVCMOS33 PULLUP true} [get_ports {col[0]}]
 
 # --- 7段数码管 ---
 # 对应讲义 1.4.4节 (EGO1/Minisys 典型引脚)
