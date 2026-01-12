@@ -115,25 +115,45 @@ void smart_display_digit(int value) {
             
             // 5. Link (BIOS + User ASM)
             const bios = `
-__reset:
+.text 0x00000000
+__reset_vector:
+    j __startup         # 0x0000: 复位跳转
+    nop
+
+__exception_vector:     # 0x0008: 异常/中断入口
+    j __isr_default
+    nop
+
+    # --- 启动代码 ---
+__startup:
     lui $sp, 0x0
-    ori $sp, $sp, 0x4000
-    move $fp, $sp
-    
-    # 算术自检 (可选)
+    ori $sp, $sp, 0x4000 # 初始化栈指针 SP = 0x4000
+    move $fp, $sp        # 初始化帧指针 FP
+
+    # 可选：算术自检，防止 ALU 故障
     addi $t0, $0, 1
     
-    # 跳转 main
+    # 跳转到用户 main 函数
     jal main
     nop
     
+    # 如果 main 返回了，进入死循环
 __hang:
     j __hang
     nop
-            `;
+
+    # --- 默认中断处理 (忽略中断) ---
+__isr_default:
+    eret                 # 异常返回，防止 CPU 卡死
+    nop
+`;
             
-            this.log("正在链接 (注入标准驱动)...", "info");
+            this.log("正在链接 (注入标准驱动与BIOS)...", "info");
+            
+            // 使用 Linker.linkAll 拼接：BIOS, UserASM, ISR Entry, ISR Handler
+            // 这里我们暂时不需要复杂的中断入口，传空字符串即可，因为 BIOS 里已经写了
             let fullAsm = window.MiniSys.Linker.linkAll(bios, userAsm, "", "");
+            
             document.getElementById('output-asm').value = fullAsm;
             
             // 6. Assemble
