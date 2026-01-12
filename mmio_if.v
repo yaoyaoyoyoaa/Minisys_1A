@@ -139,7 +139,7 @@ module mmio_if(
     reg [19:0] scan_cnt;
     reg [3:0]  hex_digit;
     always @(posedge clk) scan_cnt <= scan_cnt + 1;
-    wire [2:0] scan_sel = scan_cnt[19:17];
+    wire [2:0] scan_sel = scan_cnt[16:14];
 
     function [7:0] seg_decode;
         input [3:0] val;

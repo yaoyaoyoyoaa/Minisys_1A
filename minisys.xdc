@@ -23,9 +23,8 @@ set_property -dict {PACKAGE_PIN P4 IOSTANDARD LVCMOS33} [get_ports {buttons_in[3
 set_property -dict {PACKAGE_PIN P5 IOSTANDARD LVCMOS33} [get_ports {buttons_in[2]}]
 set_property -dict {PACKAGE_PIN P1 IOSTANDARD LVCMOS33} [get_ports {buttons_in[1]}]
 set_property -dict {PACKAGE_PIN R1 IOSTANDARD LVCMOS33} [get_ports {buttons_in[0]}]
-# 时钟专用路由约束 (防止复位逻辑报错)
-set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets rst_IBUF]
-set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets {buttons_in_IBUF[3]}]
+# [正确写法] 使用 get_ports 获取对象
+set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets -of_objects [get_ports board_rst]]
 
 # --- 24个 拨码开关 ---
 # 对应顶层端口: switches_in[23:0] (修正名称)

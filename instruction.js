@@ -1,146 +1,184 @@
-/* instruction.js */
+/* instruction.js - Robust Version */
 (function() {
     window.MiniSys = window.MiniSys || {};
     const Utils = window.MiniSys.Utils;
     const Reg = window.MiniSys.Register;
 
     class Instruction {
-        constructor(symbol, desc, pseudo, insPattern, components) {
+        constructor(symbol, fmt, components) {
             this.symbol = symbol;
-            this.desc = desc;
-            this.pseudo = pseudo;
-            this.insPattern = insPattern;
-            // 转换 components 为处理函数
-            this.components = components.map(x => ({
-                lBit: x[0],
-                rBit: x[1],
-                desc: x[2],
-                toBinary: x[3], // 函数
-                type: x[4],
-                val: x[5]
-            }));
+            this.insPattern = fmt;
+            this.components = components; 
         }
     }
 
-    const instructions = [];
-    const newIns = (sym, desc, pseudo, pattern, comps) => {
-        instructions.push(new Instruction(sym, desc, pseudo, pattern, comps));
-    };
+    let insList = [];
+    const def = (sym, fmt, comps) => insList.push(new Instruction(sym, fmt, comps));
+
+    // 辅助模板
+    const R = (op, funct) => [
+        {lBit:31, rBit:26, val:'000000'},
+        {lBit:25, rBit:21, toBinary: () => Reg.regToBin(RegExp.$2)}, // rs
+        {lBit:20, rBit:16, toBinary: () => Reg.regToBin(RegExp.$3)}, // rt
+        {lBit:15, rBit:11, toBinary: () => Reg.regToBin(RegExp.$1)}, // rd
+        {lBit:10, rBit:6,  val:'00000'},
+        {lBit:5,  rBit:0,  val: Utils.decToBin(funct, 6)}
+    ];
     
-    // 辅助：参数正则生成器
-    // type: 0=无参, 1=1参, 2=2参...
-    const paramPattern = (num) => {
-        // 简化版，实际标准版可能更复杂
-        if(num === 3) return /^\s*(\$\w+)\s*,\s*(\$\w+)\s*,\s*(-?0x[\da-f]+|-?\d+|\$\w+)\s*$/i;
-        if(num === 2) return /^\s*(\$\w+)\s*,\s*(-?0x[\da-f]+|-?\d+|\$\w+)\s*$/i; 
-        return /.*/; // 默认匹配
-    };
+    const I = (opcode) => [
+        {lBit:31, rBit:26, val: Utils.decToBin(opcode, 6)},
+        {lBit:25, rBit:21, toBinary: () => Reg.regToBin(RegExp.$2)}, // rs
+        {lBit:20, rBit:16, toBinary: () => Reg.regToBin(RegExp.$1)}, // rt
+        {lBit:15, rBit:0,  toBinary: () => Utils.literalToBin(RegExp.$3, 16)} // imm
+    ];
+
+    // --- 核心指令 ---
+    def('add',  /^add\s+(\$\w+),\s*(\$\w+),\s*(\$\w+)/i, R('add', 0x20));
+    def('addu', /^addu\s+(\$\w+),\s*(\$\w+),\s*(\$\w+)/i, R('addu', 0x21));
+    def('sub',  /^sub\s+(\$\w+),\s*(\$\w+),\s*(\$\w+)/i, R('sub', 0x22));
+    def('subu', /^subu\s+(\$\w+),\s*(\$\w+),\s*(\$\w+)/i, R('subu', 0x23));
+    def('and',  /^and\s+(\$\w+),\s*(\$\w+),\s*(\$\w+)/i, R('and', 0x24));
+    def('or',   /^or\s+(\$\w+),\s*(\$\w+),\s*(\$\w+)/i,  R('or', 0x25));
+    def('xor',  /^xor\s+(\$\w+),\s*(\$\w+),\s*(\$\w+)/i, R('xor', 0x26));
+    def('nor',  /^nor\s+(\$\w+),\s*(\$\w+),\s*(\$\w+)/i, R('nor', 0x27));
+    def('slt',  /^slt\s+(\$\w+),\s*(\$\w+),\s*(\$\w+)/i, R('slt', 0x2A));
+    def('sltu', /^sltu\s+(\$\w+),\s*(\$\w+),\s*(\$\w+)/i, R('sltu', 0x2B));
+
+    def('addi',  /^addi\s+(\$\w+),\s*(\$\w+),\s*(-?\d+|0x[\da-f]+)/i, I(0x08));
+    def('addiu', /^addiu\s+(\$\w+),\s*(\$\w+),\s*(-?\d+|0x[\da-f]+)/i, I(0x09));
+    def('andi',  /^andi\s+(\$\w+),\s*(\$\w+),\s*(\d+|0x[\da-f]+)/i,   I(0x0C));
+    def('ori',   /^ori\s+(\$\w+),\s*(\$\w+),\s*(\d+|0x[\da-f]+)/i,    I(0x0D));
+    def('xori',  /^xori\s+(\$\w+),\s*(\$\w+),\s*(\d+|0x[\da-f]+)/i,   I(0x0E));
+    def('slti',  /^slti\s+(\$\w+),\s*(\$\w+),\s*(-?\d+|0x[\da-f]+)/i, I(0x0A));
+    def('sltiu', /^sltiu\s+(\$\w+),\s*(\$\w+),\s*(-?\d+|0x[\da-f]+)/i, I(0x0B));
     
-    const noop = () => {};
-
-    // --- 标准版指令集 (部分核心指令，确保涵盖编译器输出) ---
-    
-    // R-Type (add, sub, and, or, xor, nor, slt)
-    [['add',0x20], ['addu',0x21], ['sub',0x22], ['subu',0x23], ['and',0x24], ['or',0x25], ['xor',0x26], ['nor',0x27], ['slt',0x2A], ['sltu',0x2B]].forEach(([op, func]) => {
-        newIns(op, 'R-Type Calculation', '', /^\s*(\$\w+)\s*,\s*(\$\w+)\s*,\s*(\$\w+)\s*$/i, [
-            [31,26,'op',noop,'fixed','000000'],
-            [25,21,'rs',()=>Reg.regToBin(RegExp.$2),'reg',''],
-            [20,16,'rt',()=>Reg.regToBin(RegExp.$3),'reg',''],
-            [15,11,'rd',()=>Reg.regToBin(RegExp.$1),'reg',''],
-            [10,6,'shamt',noop,'fixed','00000'],
-            [5,0,'funct',noop,'fixed',Utils.decToBin(func,6)]
-        ]);
-    });
-
-    // I-Type (addi, addiu, etc)
-    [['addi',0x08], ['addiu',0x09], ['andi',0x0C], ['ori',0x0D], ['xori',0x0E], ['slti',0x0A], ['sltiu',0x0B]].forEach(([op, code]) => {
-        newIns(op, 'I-Type Calc', '', /^\s*(\$\w+)\s*,\s*(\$\w+)\s*,\s*(-?0x[\da-f]+|-?\d+)\s*$/i, [
-            [31,26,'op',noop,'fixed',Utils.decToBin(code,6)],
-            [25,21,'rs',()=>Reg.regToBin(RegExp.$2),'reg',''],
-            [20,16,'rt',()=>Reg.regToBin(RegExp.$1),'reg',''],
-            [15,0,'imm',()=>Utils.literalToBin(RegExp.$3,16),'immed','']
-        ]);
-    });
-
-    // Load/Store (lw, sw)
-    [['lw',0x23], ['sw',0x2B], ['lb',0x20], ['sb',0x28]].forEach(([op, code]) => {
-        newIns(op, 'Memory Access', '', /^\s*(\$\w+)\s*,\s*(-?0x[\da-f]+|-?\d+)\((\$\w+)\)\s*$/i, [
-            [31,26,'op',noop,'fixed',Utils.decToBin(code,6)],
-            [25,21,'rs',()=>Reg.regToBin(RegExp.$3),'reg',''],
-            [20,16,'rt',()=>Reg.regToBin(RegExp.$1),'reg',''],
-            [15,0,'offset',()=>Utils.literalToBin(RegExp.$2,16),'immed','']
-        ]);
-    });
-
-    // Branch (beq, bne)
-    [['beq',0x04], ['bne',0x05]].forEach(([op, code]) => {
-        newIns(op, 'Branch', '', /^\s*(\$\w+)\s*,\s*(\$\w+)\s*,\s*(\w+)\s*$/i, [
-            [31,26,'op',noop,'fixed',Utils.decToBin(code,6)],
-            [25,21,'rs',()=>Reg.regToBin(RegExp.$1),'reg',''],
-            [20,16,'rt',()=>Reg.regToBin(RegExp.$2),'reg',''],
-            // 注意：labelToBin 返回对象，由 Assembler 二次处理
-            [15,0,'offset',()=>Utils.labelToBin(RegExp.$3,16,true),'label','']
-        ]);
-    });
-
-    // Jump (j, jal)
-    [['j',0x02], ['jal',0x03]].forEach(([op, code]) => {
-        newIns(op, 'Jump', '', /^\s*(\w+)\s*$/i, [
-            [31,26,'op',noop,'fixed',Utils.decToBin(code,6)],
-            [25,0,'target',()=>Utils.labelToBin(RegExp.$1,26,false),'label','']
-        ]);
-    });
-    
-    // Jr
-    newIns('jr', 'Jump Register', '', /^\s*(\$\w+)\s*$/i, [
-        [31,26,'op',noop,'fixed','000000'],
-        [25,21,'rs',()=>Reg.regToBin(RegExp.$1),'reg',''],
-        [20,0,'funct',noop,'fixed','000000000000000001000']
+    // Load/Store
+    def('lw', /^lw\s+(\$\w+),\s*(-?\d+|0x[\da-f]+)\((\$\w+)\)/i, [
+        {lBit:31, rBit:26, val: '100011'}, 
+        {lBit:25, rBit:21, toBinary: () => Reg.regToBin(RegExp.$3)}, // base
+        {lBit:20, rBit:16, toBinary: () => Reg.regToBin(RegExp.$1)}, // rt
+        {lBit:15, rBit:0,  toBinary: () => Utils.literalToBin(RegExp.$2, 16)} // offset
+    ]);
+    def('sw', /^sw\s+(\$\w+),\s*(-?\d+|0x[\da-f]+)\((\$\w+)\)/i, [
+        {lBit:31, rBit:26, val: '101011'}, 
+        {lBit:25, rBit:21, toBinary: () => Reg.regToBin(RegExp.$3)},
+        {lBit:20, rBit:16, toBinary: () => Reg.regToBin(RegExp.$1)},
+        {lBit:15, rBit:0,  toBinary: () => Utils.literalToBin(RegExp.$2, 16)}
+    ]);
+    def('lb', /^lb\s+(\$\w+),\s*(-?\d+|0x[\da-f]+)\((\$\w+)\)/i, [
+        {lBit:31, rBit:26, val: '100000'}, 
+        {lBit:25, rBit:21, toBinary: () => Reg.regToBin(RegExp.$3)},
+        {lBit:20, rBit:16, toBinary: () => Reg.regToBin(RegExp.$1)},
+        {lBit:15, rBit:0,  toBinary: () => Utils.literalToBin(RegExp.$2, 16)}
+    ]);
+    def('sb', /^sb\s+(\$\w+),\s*(-?\d+|0x[\da-f]+)\((\$\w+)\)/i, [
+        {lBit:31, rBit:26, val: '101000'}, 
+        {lBit:25, rBit:21, toBinary: () => Reg.regToBin(RegExp.$3)},
+        {lBit:20, rBit:16, toBinary: () => Reg.regToBin(RegExp.$1)},
+        {lBit:15, rBit:0,  toBinary: () => Utils.literalToBin(RegExp.$2, 16)}
     ]);
 
-    // Lui
-    newIns('lui', 'Load Upper Imm', '', /^\s*(\$\w+)\s*,\s*(-?0x[\da-f]+|-?\d+)\s*$/i, [
-        [31,26,'op',noop,'fixed','001111'],
-        [25,21,'rs',noop,'fixed','00000'],
-        [20,16,'rt',()=>Reg.regToBin(RegExp.$1),'reg',''],
-        [15,0,'imm',()=>Utils.literalToBin(RegExp.$2,16),'immed','']
+    // Branch/Jump
+    def('beq', /^beq\s+(\$\w+),\s*(\$\w+),\s*(\w+)/i, [
+        {lBit:31, rBit:26, val: '000100'},
+        {lBit:25, rBit:21, toBinary: () => Reg.regToBin(RegExp.$1)},
+        {lBit:20, rBit:16, toBinary: () => Reg.regToBin(RegExp.$2)},
+        {lBit:15, rBit:0,  toBinary: () => Utils.labelToBin(RegExp.$3, 16, true)}
     ]);
-    
-    // NOP
-    newIns('nop', 'No Operation', '', /^$/, [
-        [31,0,'val',noop,'fixed','0'.repeat(32)]
+    def('bne', /^bne\s+(\$\w+),\s*(\$\w+),\s*(\w+)/i, [
+        {lBit:31, rBit:26, val: '000101'},
+        {lBit:25, rBit:21, toBinary: () => Reg.regToBin(RegExp.$1)},
+        {lBit:20, rBit:16, toBinary: () => Reg.regToBin(RegExp.$2)},
+        {lBit:15, rBit:0,  toBinary: () => Utils.labelToBin(RegExp.$3, 16, true)}
     ]);
-    
-    // 乘除法 (mult, div, mflo, mfhi)
-    newIns('mult', 'Multiply', '', /^\s*(\$\w+)\s*,\s*(\$\w+)\s*$/i, [
-        [31,26,'op',noop,'fixed','000000'],
-        [25,21,'rs',()=>Reg.regToBin(RegExp.$1),'reg',''],
-        [20,16,'rt',()=>Reg.regToBin(RegExp.$2),'reg',''],
-        [15,6,'zeros',noop,'fixed','0000000000'],
-        [5,0,'funct',noop,'fixed','011000'] // 0x18
+    def('j', /^j\s+(\w+)/i, [
+        {lBit:31, rBit:26, val: '000010'},
+        {lBit:25, rBit:0,  toBinary: () => Utils.labelToBin(RegExp.$1, 26, false)}
     ]);
-    newIns('div', 'Divide', '', /^\s*(\$\w+)\s*,\s*(\$\w+)\s*$/i, [
-        [31,26,'op',noop,'fixed','000000'],
-        [25,21,'rs',()=>Reg.regToBin(RegExp.$1),'reg',''],
-        [20,16,'rt',()=>Reg.regToBin(RegExp.$2),'reg',''],
-        [15,6,'zeros',noop,'fixed','0000000000'],
-        [5,0,'funct',noop,'fixed','011010'] // 0x1A
+    def('jal', /^jal\s+(\w+)/i, [
+        {lBit:31, rBit:26, val: '000011'},
+        {lBit:25, rBit:0,  toBinary: () => Utils.labelToBin(RegExp.$1, 26, false)}
     ]);
-    newIns('mflo', 'Move from LO', '', /^\s*(\$\w+)\s*$/i, [
-        [31,26,'op',noop,'fixed','000000'],
-        [25,16,'zeros',noop,'fixed','0000000000'],
-        [15,11,'rd',()=>Reg.regToBin(RegExp.$1),'reg',''],
-        [10,6,'zeros',noop,'fixed','00000'],
-        [5,0,'funct',noop,'fixed','010010'] // 0x12
-    ]);
-    newIns('mfhi', 'Move from HI', '', /^\s*(\$\w+)\s*$/i, [
-        [31,26,'op',noop,'fixed','000000'],
-        [25,16,'zeros',noop,'fixed','0000000000'],
-        [15,11,'rd',()=>Reg.regToBin(RegExp.$1),'reg',''],
-        [10,6,'zeros',noop,'fixed','00000'],
-        [5,0,'funct',noop,'fixed','010000'] // 0x10
+    def('jr', /^jr\s+(\$\w+)/i, [
+        {lBit:31, rBit:26, val: '000000'},
+        {lBit:25, rBit:21, toBinary: () => Reg.regToBin(RegExp.$1)},
+        {lBit:20, rBit:0,  val: '000000000000000001000'}
     ]);
 
-    window.MiniSys.Instruction = Instruction;
-    window.MiniSys.MinisysInstructions = instructions;
+    // [关键修复] 直接支持 move 指令 (映射为 addu $d, $0, $s)
+    // move $rt, $rs -> addu $rt, $0, $rs
+    def('move', /^move\s+(\$\w+),\s*(\$\w+)/i, [
+        {lBit:31, rBit:26, val: '000000'}, // Opcode
+        {lBit:25, rBit:21, val: '00000'},  // rs = $0
+        {lBit:20, rBit:16, toBinary: () => Reg.regToBin(RegExp.$2)}, // rt = Source
+        {lBit:15, rBit:11, toBinary: () => Reg.regToBin(RegExp.$1)}, // rd = Dest
+        {lBit:10, rBit:6,  val: '00000'},  // shamt
+        {lBit:5,  rBit:0,  val: '100001'}  // funct = addu (0x21)
+    ]);
+
+    // 其他指令
+    def('lui', /^lui\s+(\$\w+),\s*(-?0x[\da-f]+|-?\d+)/i, [
+        {lBit:31, rBit:26, val: '001111'},
+        {lBit:25, rBit:21, val: '00000'},
+        {lBit:20, rBit:16, toBinary: () => Reg.regToBin(RegExp.$1)},
+        {lBit:15, rBit:0,  toBinary: () => Utils.literalToBin(RegExp.$2, 16)}
+    ]);
+    def('sll', /^sll\s+(\$\w+),\s*(\$\w+),\s*(\d+|0x[\da-f]+)/i, [
+        {lBit:31, rBit:26, val: '000000'},
+        {lBit:25, rBit:21, val: '00000'},
+        {lBit:20, rBit:16, toBinary: () => Reg.regToBin(RegExp.$2)},
+        {lBit:15, rBit:11, toBinary: () => Reg.regToBin(RegExp.$1)},
+        {lBit:10, rBit:6,  toBinary: () => Utils.literalToBin(RegExp.$3, 5)},
+        {lBit:5,  rBit:0,  val: '000000'}
+    ]);
+    def('sllv', /^sllv\s+(\$\w+),\s*(\$\w+),\s*(\$\w+)/i, [
+        {lBit:31, rBit:26, val: '000000'},
+        {lBit:25, rBit:21, toBinary: () => Reg.regToBin(RegExp.$3)},
+        {lBit:20, rBit:16, toBinary: () => Reg.regToBin(RegExp.$2)},
+        {lBit:15, rBit:11, toBinary: () => Reg.regToBin(RegExp.$1)},
+        {lBit:10, rBit:0,  val: '00000000100'}
+    ]);
+    def('srlv', /^srlv\s+(\$\w+),\s*(\$\w+),\s*(\$\w+)/i, [
+        {lBit:31, rBit:26, val: '000000'},
+        {lBit:25, rBit:21, toBinary: () => Reg.regToBin(RegExp.$3)},
+        {lBit:20, rBit:16, toBinary: () => Reg.regToBin(RegExp.$2)},
+        {lBit:15, rBit:11, toBinary: () => Reg.regToBin(RegExp.$1)},
+        {lBit:10, rBit:0,  val: '00000000110'}
+    ]);
+    def('mult', /^mult\s+(\$\w+),\s*(\$\w+)/i, [
+        {lBit:31, rBit:26, val: '000000'},
+        {lBit:25, rBit:21, toBinary: () => Reg.regToBin(RegExp.$1)},
+        {lBit:20, rBit:16, toBinary: () => Reg.regToBin(RegExp.$2)},
+        {lBit:15, rBit:0,  val: '0000000000011000'}
+    ]);
+    def('div', /^div\s+(\$\w+),\s*(\$\w+)/i, [
+        {lBit:31, rBit:26, val: '000000'},
+        {lBit:25, rBit:21, toBinary: () => Reg.regToBin(RegExp.$1)},
+        {lBit:20, rBit:16, toBinary: () => Reg.regToBin(RegExp.$2)},
+        {lBit:15, rBit:0,  val: '0000000000011010'}
+    ]);
+    def('mflo', /^mflo\s+(\$\w+)/i, [
+        {lBit:31, rBit:26, val: '000000'},
+        {lBit:25, rBit:16, val: '0000000000'},
+        {lBit:15, rBit:11, toBinary: () => Reg.regToBin(RegExp.$1)},
+        {lBit:10, rBit:0,  val: '00000010010'}
+    ]);
+    def('mfhi', /^mfhi\s+(\$\w+)/i, [
+        {lBit:31, rBit:26, val: '000000'},
+        {lBit:25, rBit:16, val: '0000000000'},
+        {lBit:15, rBit:11, toBinary: () => Reg.regToBin(RegExp.$1)},
+        {lBit:10, rBit:0,  val: '00000010000'}
+    ]);
+    def('nop', /^nop/i, [{lBit:31, rBit:0, val: '0'.repeat(32)}]);
+
+    def('mtc0', /^mtc0\s+(\$\w+),\s*(\d+)/i, [
+        {lBit:31, rBit:26, val: '010000'},
+        {lBit:25, rBit:21, val: '00100'}, 
+        {lBit:20, rBit:16, toBinary: () => Reg.regToBin(RegExp.$1)},
+        {lBit:15, rBit:11, toBinary: () => Utils.decToBin(parseInt(RegExp.$2), 5)},
+        {lBit:10, rBit:0,  val: '00000000000'}
+    ]);
+    def('eret', /^eret/i, [{lBit:31, rBit:0, val: '01000010000000000000000000011000'}]);
+
+    window.MiniSys.Instructions = insList;
 })();

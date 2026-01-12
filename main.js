@@ -1,27 +1,23 @@
-/* main.js - Final Fixed Version */
+/* main.js - Final Version (Fixed void param issue) */
 const ide = {
-    // 默认代码
+    // 默认代码 (去掉了 main(void) 中的 void)
     defaultCode: `// Minisys-1A Ultimate Test
 void main() {
     int switch_val;
     int key_val;
     int count;
     
-    // 1. 开机自检
     smart_display_digit(0);
     light_leds(0);
     $0xFFFFFD10 = 0;
     
     while(1) {
-        // 测试开关 -> LED
         switch_val = read_switch();
         light_leds(switch_val);
         
-        // 测试键盘 -> 数码管
         key_val = read_keyboard();
         if (key_val != 0) {
             smart_display_digit(key_val);
-            // 蜂鸣器反馈
             $0xFFFFFD10 = 1;
             count = 0;
             while(count < 2000) { count = count + 1; }
@@ -33,32 +29,31 @@ void main() {
     }
 }`,
 
-    // [关键修正] 给所有 if 语句加上了 { }，适配 mini_c.js 编译器的严格语法
+    // [关键修正] 移除了 read_switch 和 read_keyboard 参数里的 void
     drivers: `
 void light_leds(int code) {
     $0xFFFFFC60 = code;
     return;
 }
-int read_switch(void) {
+int read_switch() {
     return $0xFFFFFC70;
 }
-int read_keyboard(void) {
+int read_keyboard() {
     return $0xFFFFFC10;
 }
 void display_digit(int loc, int num) {
     int current_val; int shift_bits; int mask;
-    // 修正：增加花括号
-    if (loc < 0) { loc = 0; } 
+    if (loc < 0) { loc = 0; }
     if (loc > 7) { loc = 7; }
-    if (num < 0) { num = 0; } 
+    if (num < 0) { num = 0; }
     if (num > 15) { num = 15; }
     
     shift_bits = loc * 4;
     current_val = $0xFFFFFC00;
     
-    mask = 15; 
-    mask = mask << shift_bits; 
-    mask = mask ^ -1; // 取反
+    mask = 15;
+    mask = mask << shift_bits;
+    mask = 0xFFFFFFFF ^ mask;
     
     current_val = current_val & mask;
     current_val = current_val | (num << shift_bits);
@@ -68,8 +63,10 @@ void display_digit(int loc, int num) {
 void smart_display_digit(int value) {
     int current_loc; int data; int remainder;
     current_loc = 0; data = value;
-    $0xFFFFFC00 = 0; // Clear
-    if (data == 0) { display_digit(0, 0); }
+    $0xFFFFFC00 = 0;
+    if (data == 0) {
+        display_digit(0, 0);
+    }
     else {
         while (data > 0 && current_loc < 8) {
             remainder = data % 10;
@@ -88,7 +85,7 @@ void smart_display_digit(int value) {
         this.lines = document.getElementById('line-numbers');
         this.input.value = this.defaultCode;
         this.onInput();
-        this.log("系统就绪 (已修复驱动语法)。", "success");
+        this.log("系统就绪 (已修复 void 参数问题)。", "success");
     },
 
     onInput: function() {
@@ -115,15 +112,17 @@ void smart_display_digit(int value) {
 
     buildRun: function() {
         this.log("正在构建...", "info");
-        const userSource = this.input.value;
-        const fullSource = this.drivers + "\n" + userSource; // 注入修正后的驱动
+        
+        const fullSource = this.drivers + "\n" + this.input.value;
+        console.log("=== Source Code ===");
+        console.log(fullSource);
 
         try {
             if (!window.MiniSys || !window.MiniSys.compile) throw new Error("编译器未加载，请检查 index.html");
+            
             let userAsm = window.MiniSys.compile(fullSource);
             userAsm = userAsm.replace(/\.text.*/, '').replace(/\.data.*/, ''); 
 
-            // BIOS (含异常入口)
             const bios = `
 .text 0x00000000
 __reset_vector:
