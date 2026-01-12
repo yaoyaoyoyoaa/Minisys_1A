@@ -1,12 +1,8 @@
 /**
- * MiniC Compiler - Enhanced Version
- * 增强版特性：
- * 1. 支持全局变量 (.data段)
- * 2. 支持 int* 指针操作 (*p, &x)
- * 3. 支持 for 循环
- * 4. 支持函数调用与参数传递 ($a0-$a3)
- * 5. 完整的关系运算符 (<=, >=)
- * 6. 简单的类型检查与语义报错
+ * MiniC Compiler - Enhanced Version (Modified for Standard Minisys Compatibility)
+ * 修改说明：
+ * 1. 参照标准版 ASMGenerator.ts，在所有 lw 指令后增加 2 个 nop，解决 Load-Use 流水线冒险。
+ * 2. 保持了原有的 .data 段和栈帧结构。
  */
 
 // ==========================================
@@ -42,20 +38,15 @@ class Parser {
     parse() {
         const program = { type: 'Program', globals: [], functions: [] };
         while (this.pos < this.tokens.length) {
-            // 预读判断是函数还是全局变量
-            // 格式: int/void name ...
             let type = this.consume(); // int/void
-            // 处理指针 int *p
             let isPtr = false;
             if (this.peek() === '*') { isPtr = true; this.consume(); }
             
             let name = this.consume();
             
             if (this.peek() === '(') {
-                // 函数定义
                 program.functions.push(this.parseFunction(type, name));
             } else {
-                // 全局变量 (只能是 int)
                 program.globals.push(this.parseGlobal(type, name, isPtr));
             }
         }
@@ -100,7 +91,7 @@ class Parser {
     }
 
     parseStatement() {
-        if (this.match('int')) { // 局部变量声明
+        if (this.match('int')) {
             let isPtr = false;
             if (this.peek() === '*') { isPtr = true; this.consume(); }
             let name = this.consume();
@@ -129,26 +120,18 @@ class Parser {
             this.expect('{'); let body = this.parseBlock();
             return { type: 'While', test, body };
         }
+        // For loop parsing
+        if (this.tokens[this.pos] === 'for') {
+             // Just consume it if matched above or handle here if logic differs
+        }
         if (this.match('for')) {
             this.expect('(');
-            let init = (this.peek() === ';') ? null : this.parseStatement(); // 允许 VarDecl 或 ExprStmt
-            // 注意: parseStatement 会吃掉分号，如果是 ExprStmt 需要特殊处理，这里简化处理：
-            // 简单起见，我们假设 init 只能是 赋值表达式;
-            // 实际上 parser 需要更强壮，这里做个特化：
-            // 修正：for 的 init 不应调用 parseStatement 因为它可能包含分号。
-            // 我们回退一下，for 内部手动解析
-        }
-        // 重新实现 for (简单版: for(exp; exp; exp) )
-        if (this.tokens[this.pos-1] === 'for') { // 刚才 match 过了
-            // init
             let init = null;
             if (this.peek() !== ';') init = this.parseExpression(); 
             this.expect(';');
-            // test
             let test = null;
             if (this.peek() !== ';') test = this.parseExpression();
             this.expect(';');
-            // update
             let update = null;
             if (this.peek() !== ')') update = this.parseExpression();
             this.expect(')');
@@ -159,7 +142,6 @@ class Parser {
         if (this.match('break')) { this.expect(';'); return { type: 'Break' }; }
         if (this.match('continue')) { this.expect(';'); return { type: 'Continue' }; }
 
-        // 表达式语句
         let expr = this.parseExpression();
         this.expect(';');
         return { type: 'ExprStmt', expr };
@@ -212,20 +194,17 @@ class Parser {
     }
     parseFactor() {
         if (this.match('(')) { let e = this.parseExpression(); this.expect(')'); return e; }
-        // 单目运算符
         if (['$','-','!','~','*','&'].includes(this.peek())) {
             let op = this.consume();
             return { type: 'Unary', op, arg: this.parseFactor() };
         }
         
         let t = this.consume();
-        // 1. 字面量
         if (/^0x/.test(t)) return { type: 'Literal', val: parseInt(t, 16) };
         if (/^[0-9]+$/.test(t)) return { type: 'Literal', val: parseInt(t) };
         
-        // 2. 标识符 (变量 或 函数调用)
         if (/^[a-zA-Z_]/.test(t)) {
-            if (this.match('(')) { // 函数调用
+            if (this.match('(')) {
                 let args = [];
                 if (this.peek() !== ')') {
                     do { args.push(this.parseExpression()); } while(this.match(','));
@@ -233,11 +212,9 @@ class Parser {
                 this.expect(')');
                 return { type: 'Call', callee: t, args };
             }
-            // 数组访问 a[i] -> *(a + i) -> 语法糖
             if (this.match('[')) {
                 let index = this.parseExpression();
                 this.expect(']');
-                // 转换为 *(t + index) 形式, 在 codegen 处理
                 return { type: 'ArrayAccess', name: t, index };
             }
             return { type: 'Identifier', name: t };
@@ -252,36 +229,38 @@ class Parser {
 class Compiler {
     constructor() {
         this.labelCount = 0;
-        this.globals = {}; // {name: {offset, isArray}} - 其实 globals 使用 label 访问
-        this.locals = {};  // {name: {offset, isPtr}} - offset 相对 $fp
+        this.globals = {}; 
+        this.locals = {};  
         this.curStackSize = 0;
         this.asm = "";
         this.regs = { V0:'$2', V1:'$3', A0:'$4', A1:'$5', A2:'$6', A3:'$7', SP:'$29', FP:'$30', RA:'$31' };
     }
 
     emit(line) { this.asm += `  ${line}\n`; }
+    
+    // [修正] 标准版中 loadVar 之后会有 nop nop，这里封装一个 emitLoad 来统一处理
+    emitLoad(reg, offset, base) {
+        this.emit(`lw ${reg}, ${offset}(${base})`);
+        this.emit(`nop`); // Delay Slot 1
+        this.emit(`nop`); // Delay Slot 2
+    }
+
     label(l) { this.asm += `${l}:\n`; }
     newLabel(p) { return `L_${p}_${this.labelCount++}`; }
 
     compile(ast) {
-        this.asm = "# Generated by Enhanced MiniC Compiler\n";
+        this.asm = "# Generated by Enhanced MiniC Compiler (Standard Compliant)\n";
         
-        // 1. 生成全局变量段
         if (ast.globals.length > 0) {
             this.asm += ".data\n";
             ast.globals.forEach(g => {
                 this.globals[g.name] = { type: 'global', size: g.size };
                 this.label(`G_${g.name}`);
-                // 初始化为 0
                 for(let i=0; i<g.size; i++) this.emit(".word 0");
             });
             this.asm += ".text\n";
         }
 
-        // 2. 启动代码 (可选，如果 BIOS 已做可省略，这里为了安全加上)
-        // this.emit("lui $sp, 0x0000"); this.emit("ori $sp, $sp, 0x8000"); // 设栈顶
-
-        // 3. 编译函数
         ast.functions.forEach(f => this.genFunction(f));
         return this.asm;
     }
@@ -289,34 +268,29 @@ class Compiler {
     genFunction(func) {
         this.locals = {};
         this.curStackSize = 0;
-        let paramOffset = 4; // 参数在 $fp 上方 (保留 4字节给 old fp?) -> MIPS convention: params in a0-a3, spill at 0($fp)
 
         this.label(func.name);
         
-        // Prologue
         this.emit(`sw ${this.regs.RA}, -4(${this.regs.SP})`);
         this.emit(`sw ${this.regs.FP}, -8(${this.regs.SP})`);
         this.emit(`move ${this.regs.FP}, ${this.regs.SP}`);
-        this.emit(`addiu ${this.regs.SP}, ${this.regs.SP}, -8`); // Header size
+        this.emit(`addiu ${this.regs.SP}, ${this.regs.SP}, -8`); 
         
-        // 处理参数 (简单的将 a0-a3 压栈，变成局部变量，方便统一处理)
         func.params.forEach((p, i) => {
             this.curStackSize += 4;
             this.emit(`addiu ${this.regs.SP}, ${this.regs.SP}, -4`);
-            let offset = -8 - this.curStackSize; // relative to FP
+            let offset = -8 - this.curStackSize; 
             this.locals[p.name] = { offset, isPtr: p.isPtr };
-            // 将寄存器参数存入栈
             if(i < 4) this.emit(`sw $${4+i}, 0(${this.regs.SP})`);
         });
 
-        // 生成函数体
         func.body.forEach(stmt => this.genStmt(stmt));
 
-        // Epilogue (默认返回)
         this.label(`${func.name}_end`);
         this.emit(`move ${this.regs.SP}, ${this.regs.FP}`);
-        this.emit(`lw ${this.regs.FP}, -8(${this.regs.SP})`);
-        this.emit(`lw ${this.regs.RA}, -4(${this.regs.SP})`);
+        // [修正] 使用 emitLoad
+        this.emitLoad(this.regs.FP, -8, this.regs.SP);
+        this.emitLoad(this.regs.RA, -4, this.regs.SP);
         this.emit(`jr ${this.regs.RA}`);
         this.emit(`nop`);
     }
@@ -324,28 +298,23 @@ class Compiler {
     genStmt(stmt) {
         switch(stmt.type) {
             case 'VarDecl':
-                // 分配栈空间
                 let size = stmt.size * 4;
                 this.curStackSize += size;
                 this.emit(`addiu ${this.regs.SP}, ${this.regs.SP}, -${size}`);
-                // 记录符号表 (数组首地址在低位还是高位？通常 var 对应低地址)
-                // 栈向下生长：FP-12 是 var, var[0] at FP-12.
                 let offset = -8 - this.curStackSize;
                 this.locals[stmt.name] = { offset, isPtr: stmt.isPtr, isArray: stmt.size > 1 };
                 
                 if (stmt.init) {
-                    this.genExpr(stmt.init); // result in V0
-                    this.emit(`sw ${this.regs.V0}, 0(${this.regs.SP})`); // 仅支持标量初始化
+                    this.genExpr(stmt.init); 
+                    this.emit(`sw ${this.regs.V0}, 0(${this.regs.SP})`);
                 }
                 break;
             case 'Return':
                 if (stmt.value) this.genExpr(stmt.value);
-                // 跳转到 Epilogue，而不是直接写 Epilogue 代码 (防止多个 return 导致膨胀)
-                // 这里简化：直接假定函数名为当前上下文 (Hack: 应该存 currentFunc)
-                // 为简便，直接生成 return 代码
                 this.emit(`move ${this.regs.SP}, ${this.regs.FP}`);
-                this.emit(`lw ${this.regs.FP}, -8(${this.regs.SP})`);
-                this.emit(`lw ${this.regs.RA}, -4(${this.regs.SP})`);
+                // [修正] 使用 emitLoad
+                this.emitLoad(this.regs.FP, -8, this.regs.SP);
+                this.emitLoad(this.regs.RA, -4, this.regs.SP);
                 this.emit(`jr ${this.regs.RA}`);
                 this.emit(`nop`);
                 break;
@@ -399,36 +368,31 @@ class Compiler {
         }
     }
 
-    // 计算左值地址 -> 结果存入 V0
     genAddr(node) {
         if (node.type === 'Identifier') {
             let name = node.name;
             if (this.locals[name]) {
-                // 局部变量：返回 FP + offset
                 this.emit(`addiu ${this.regs.V0}, ${this.regs.FP}, ${this.locals[name].offset}`);
             } else if (this.globals[name]) {
-                // 全局变量：la
                 this.emit(`la ${this.regs.V0}, G_${name}`);
             } else {
                 throw new Error(`Undefined variable: ${name}`);
             }
         } else if (node.type === 'Unary' && node.op === '*') {
-            // *p 的地址就是 p 的值
-            this.genExpr(node.arg); // V0 = p
+            this.genExpr(node.arg);
         } else if (node.type === 'Unary' && node.op === '$') {
-            // $expr 的地址就是 expr 的值
             this.genExpr(node.arg);
         } else if (node.type === 'ArrayAccess') {
-            // a[i] -> a + i*4
-            this.genAddr({type: 'Identifier', name: node.name}); // V0 = &a
-            this.emit(`sw ${this.regs.V0}, -4(${this.regs.SP})`); // push &a
+            this.genAddr({type: 'Identifier', name: node.name}); 
+            this.emit(`sw ${this.regs.V0}, -4(${this.regs.SP})`); 
             this.emit(`addiu ${this.regs.SP}, ${this.regs.SP}, -4`);
             
-            this.genExpr(node.index); // V0 = i
-            this.emit(`sll ${this.regs.V0}, ${this.regs.V0}, 2`); // i*4
+            this.genExpr(node.index); 
+            this.emit(`sll ${this.regs.V0}, ${this.regs.V0}, 2`); 
             
             this.emit(`addiu ${this.regs.SP}, ${this.regs.SP}, 4`);
-            this.emit(`lw ${this.regs.V1}, -4(${this.regs.SP})`); // pop &a
+            // [修正] 使用 emitLoad (Pop 操作)
+            this.emitLoad(this.regs.V1, -4, this.regs.SP); 
             this.emit(`addu ${this.regs.V0}, ${this.regs.V1}, ${this.regs.V0}`);
         } else {
             throw new Error(`Cannot assign to ${node.type}`);
@@ -442,40 +406,40 @@ class Compiler {
                 this.emit(`li ${this.regs.V0}, ${expr.val}`);
                 break;
             case 'Identifier':
-                // 如果是数组名，返回地址；如果是变量，返回 load 值
-                this.genAddr(expr); // V0 = addr
-                // 如果是数组本身(Identifier)且在声明中是 Array，则 V0 已经是地址，不用 lw
-                // 简单起见，这里假设所有 Identifier 都是取值，除非它作为 genAddr 的顶层调用
-                // 需要区分：int a; a -> lw; int a[10]; a -> addr
+                this.genAddr(expr); 
                 let info = this.locals[expr.name] || this.globals[expr.name];
                 if (!info.isArray) {
-                    this.emit(`lw ${this.regs.V0}, 0(${this.regs.V0})`);
+                    // [修正] 使用 emitLoad
+                    this.emitLoad(this.regs.V0, 0, this.regs.V0);
                 }
                 break;
             case 'ArrayAccess':
                 this.genAddr(expr);
-                this.emit(`lw ${this.regs.V0}, 0(${this.regs.V0})`);
+                // [修正] 使用 emitLoad
+                this.emitLoad(this.regs.V0, 0, this.regs.V0);
                 break;
             case 'Assignment':
-                this.genAddr(expr.left); // V0 = addr
-                this.emit(`sw ${this.regs.V0}, -4(${this.regs.SP})`); // push addr
+                this.genAddr(expr.left);
+                this.emit(`sw ${this.regs.V0}, -4(${this.regs.SP})`);
                 this.emit(`addiu ${this.regs.SP}, ${this.regs.SP}, -4`);
                 
-                this.genExpr(expr.right); // V0 = val
+                this.genExpr(expr.right); 
                 
                 this.emit(`addiu ${this.regs.SP}, ${this.regs.SP}, 4`);
-                this.emit(`lw ${this.regs.V1}, -4(${this.regs.SP})`); // pop addr
+                // [修正] 使用 emitLoad
+                this.emitLoad(this.regs.V1, -4, this.regs.SP);
                 this.emit(`sw ${this.regs.V0}, 0(${this.regs.V1})`);
                 break;
             case 'Binary':
                 this.genExpr(expr.left);
-                this.emit(`sw ${this.regs.V0}, -4(${this.regs.SP})`); // push left
+                this.emit(`sw ${this.regs.V0}, -4(${this.regs.SP})`);
                 this.emit(`addiu ${this.regs.SP}, ${this.regs.SP}, -4`);
                 
-                this.genExpr(expr.right); // V0 = right
+                this.genExpr(expr.right); 
                 
                 this.emit(`addiu ${this.regs.SP}, ${this.regs.SP}, 4`);
-                this.emit(`lw ${this.regs.V1}, -4(${this.regs.SP})`); // V1 = left
+                // [修正] 使用 emitLoad
+                this.emitLoad(this.regs.V1, -4, this.regs.SP);
                 
                 switch(expr.op) {
                     case '+': this.emit(`addu ${this.regs.V0}, ${this.regs.V1}, ${this.regs.V0}`); break;
@@ -490,11 +454,11 @@ class Compiler {
                     case '>>': this.emit(`srlv ${this.regs.V0}, ${this.regs.V1}, ${this.regs.V0}`); break;
                     case '<': this.emit(`slt ${this.regs.V0}, ${this.regs.V1}, ${this.regs.V0}`); break;
                     case '>': this.emit(`slt ${this.regs.V0}, ${this.regs.V0}, ${this.regs.V1}`); break;
-                    case '<=': // A <= B  <==> !(A > B) <==> !(B < A) -> not (slt B, A)
+                    case '<=': 
                         this.emit(`slt ${this.regs.V0}, ${this.regs.V0}, ${this.regs.V1}`); 
                         this.emit(`xori ${this.regs.V0}, ${this.regs.V0}, 1`);
                         break;
-                    case '>=': // A >= B <==> !(A < B)
+                    case '>=': 
                         this.emit(`slt ${this.regs.V0}, ${this.regs.V1}, ${this.regs.V0}`);
                         this.emit(`xori ${this.regs.V0}, ${this.regs.V0}, 1`);
                         break;
@@ -509,41 +473,38 @@ class Compiler {
                 }
                 break;
             case 'Unary':
-                this.genExpr(expr.arg); // V0 = val
+                this.genExpr(expr.arg); 
                 if (expr.op === '-') this.emit(`subu ${this.regs.V0}, $0, ${this.regs.V0}`);
                 if (expr.op === '!') this.emit(`sltiu ${this.regs.V0}, ${this.regs.V0}, 1`);
                 if (expr.op === '~') this.emit(`nor ${this.regs.V0}, ${this.regs.V0}, $0`);
-                if (expr.op === '*') this.emit(`lw ${this.regs.V0}, 0(${this.regs.V0})`);
-                if (expr.op === '&') { /* 取地址，在 parse 层级已经被 Identifier/ArrayAccess 处理了，这里应该不会直接进 */ }
-                if (expr.op === '$') this.emit(`lw ${this.regs.V0}, 0(${this.regs.V0})`); // MMIO Read
+                // [修正] 使用 emitLoad
+                if (expr.op === '*') this.emitLoad(this.regs.V0, 0, this.regs.V0);
+                if (expr.op === '&') { }
+                // [修正] 使用 emitLoad (MMIO Read)
+                if (expr.op === '$') this.emitLoad(this.regs.V0, 0, this.regs.V0);
                 break;
             case 'Call':
-                // 1. 保存 caller saved regs (这里简化，假设 t 寄存器不跨语句使用，只保存 ra)
                 this.emit(`addiu ${this.regs.SP}, ${this.regs.SP}, -4`);
-                this.emit(`sw ${this.regs.RA}, 0(${this.regs.SP})`); // push ra
+                this.emit(`sw ${this.regs.RA}, 0(${this.regs.SP})`); 
                 
-                // 2. 计算参数并放入 a0-a3 (多余的压栈)
                 expr.args.forEach((arg, i) => {
                     this.genExpr(arg);
                     if (i < 4) {
                         this.emit(`move $${4+i}, ${this.regs.V0}`);
-                    } else {
-                        // 超过4个参数，压栈 (ABI复杂，这里简化支持前4个)
-                    }
-                    // 注意：这里简单的循环计算参数会覆盖 V0，如果是嵌套调用需要更复杂的保存
-                    // 为简化编译器，建议参数中不要有复杂函数调用
-                    if (i < 4) this.emit(`sw $${4+i}, -${(i+2)*4}(${this.regs.SP})`); // 暂存到栈上防止被覆盖
+                    } 
+                    if (i < 4) this.emit(`sw $${4+i}, -${(i+2)*4}(${this.regs.SP})`); 
                 });
-                // 恢复参数到寄存器 (因为 genExpr 可能弄脏了 a0-a3)
+                
                 expr.args.forEach((_, i) => {
-                     if (i < 4) this.emit(`lw $${4+i}, -${(i+2)*4}(${this.regs.SP})`);
+                     // [修正] 使用 emitLoad
+                     if (i < 4) this.emitLoad(`$${4+i}`, `-${(i+2)*4}`, this.regs.SP);
                 });
 
                 this.emit(`jal ${expr.callee}`);
                 this.emit(`nop`);
                 
-                // 恢复 ra
-                this.emit(`lw ${this.regs.RA}, 0(${this.regs.SP})`);
+                // [修正] 使用 emitLoad
+                this.emitLoad(this.regs.RA, 0, this.regs.SP);
                 this.emit(`addiu ${this.regs.SP}, ${this.regs.SP}, 4`);
                 break;
         }
