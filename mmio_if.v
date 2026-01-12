@@ -14,9 +14,11 @@ module mmio_if(
     input  wire [3:0]  col,
     output wire [3:0]  row,
     output reg         pwm_out,
+    output reg         beep_out, // [新增] 蜂鸣器端口
     output reg         wdg_rst_req,
     output wire [1:0]  timer_int
 );
+    // 地址定义
     localparam ADDR_SEG_L   = 16'hFC00;
     localparam ADDR_SEG_H   = 16'hFC02;
     localparam ADDR_KEY_VAL = 16'hFC10;
@@ -31,6 +33,7 @@ module mmio_if(
     localparam ADDR_WDG     = 16'hFC50;
     localparam ADDR_LED     = 16'hFC60;
     localparam ADDR_SWITCH  = 16'hFC70;
+    localparam ADDR_BEEP    = 16'hFD10; // [新增] 蜂鸣器地址
 
     reg [31:0] disp_data_reg;
     reg [15:0] t0_mode, t1_mode;
@@ -42,6 +45,8 @@ module mmio_if(
     reg [15:0] pwm_cnt;
     reg [31:0] wdg_cnt;
     reg wdg_en;
+    reg [15:0] beep_reg; // [新增] 蜂鸣器寄存器
+
     wire [3:0] key_val;
     wire key_pressed;
     
@@ -49,6 +54,7 @@ module mmio_if(
 
     wire [15:0] addr_low = addr[15:0];
 
+    // 读操作逻辑
     always @* begin
         rdata = 32'h0;
         case (addr_low)
@@ -61,10 +67,12 @@ module mmio_if(
             ADDR_T0_VAL:  rdata = {16'b0, t0_curr};
             ADDR_T1_VAL:  rdata = {16'b0, t1_curr};
             ADDR_SEG_L:   rdata = disp_data_reg;
+            ADDR_BEEP:    rdata = {16'b0, beep_reg}; // [新增]
             default:      rdata = 32'h0;
         endcase
     end
 
+    // 写操作与外设逻辑
     always @(posedge clk) begin
         if (rst) begin
             led_out <= 0;
@@ -74,6 +82,7 @@ module mmio_if(
             pwm_max <= 16'hFFFF;
             pwm_cmp <= 16'h7FFF; pwm_en <= 0;
             wdg_en <= 0; wdg_rst_req <= 0;
+            beep_reg <= 0; beep_out <= 0; // [新增]
         end else begin
             wdg_rst_req <= (wdg_cnt == 0 && wdg_en);
             if (t0_flag && addr_low == ADDR_T0_MODE && !we) t0_flag <= 0;
@@ -82,13 +91,11 @@ module mmio_if(
             if (we) begin
                 case (addr_low)
                     ADDR_LED: led_out <= wdata[23:0];
-                    // --- 关键修改：只写低位，不影响高位 ---
                     ADDR_SEG_L: begin
                         if(be[0]) disp_data_reg[7:0]   <= wdata[7:0];
                         if(be[1]) disp_data_reg[15:8]  <= wdata[15:8];
                     end
                     ADDR_SEG_H: disp_data_reg[31:16] <= wdata[15:0];
-                    // ----------------------------------
                     ADDR_T0_MODE: t0_mode <= wdata[15:0];
                     ADDR_T1_MODE: t1_mode <= wdata[15:0];
                     ADDR_T0_VAL:  begin t0_init <= wdata[15:0]; t0_curr <= wdata[15:0]; t0_flag <= 0; end
@@ -96,23 +103,30 @@ module mmio_if(
                     ADDR_PWM_MAX: pwm_max <= wdata[15:0];
                     ADDR_PWM_CMP: pwm_cmp <= wdata[15:0];
                     ADDR_PWM_CTL: pwm_en  <= wdata[0];
-                    ADDR_WDG: begin wdg_cnt <= 32'hFFFFFFFF; wdg_en <= 1; end
+                    ADDR_WDG:     begin wdg_cnt <= 32'hFFFFFFFF; wdg_en <= 1; end
+                    ADDR_BEEP:    beep_reg <= wdata[15:0]; // [新增] 写蜂鸣器
                 endcase
             end
             
+            // 蜂鸣器输出 (假设写非0即响)
+            beep_out <= |beep_reg;
+
+            // 定时器逻辑保持不变...
             if (t0_curr > 0) t0_curr <= t0_curr - 1;
             else if (t0_mode[1]) begin t0_curr <= t0_init; t0_flag <= 1; end
             else t0_flag <= 1;
-            
+
             if (t1_curr > 0) t1_curr <= t1_curr - 1;
             else if (t1_mode[1]) begin t1_curr <= t1_init; t1_flag <= 1; end
             
+            // PWM 逻辑保持不变...
             if (pwm_en) begin
                 if (pwm_cnt >= pwm_max) pwm_cnt <= 0;
                 else pwm_cnt <= pwm_cnt + 1;
                 pwm_out <= (pwm_cnt < pwm_cmp);
             end else pwm_out <= 0;
 
+            // Watchdog 逻辑保持不变...
             if (wdg_en) begin
                 if (wdg_cnt > 0) wdg_cnt <= wdg_cnt - 1;
             end else wdg_cnt <= 32'h05F5E100;
@@ -120,12 +134,13 @@ module mmio_if(
     end
     
     assign timer_int = {t1_flag, t0_flag};
-
+    
+    // 数码管扫描逻辑 (保持不变)
     reg [19:0] scan_cnt;
     reg [3:0]  hex_digit;
     always @(posedge clk) scan_cnt <= scan_cnt + 1;
     wire [2:0] scan_sel = scan_cnt[19:17];
-    
+
     function [7:0] seg_decode;
         input [3:0] val;
         case (val)
