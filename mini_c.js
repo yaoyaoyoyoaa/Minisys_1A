@@ -511,8 +511,12 @@ class Compiler {
     }
 }
 
-module.exports = { 
-    compile: (source) => {
+(function() {
+    // 确保命名空间存在
+    window.MiniSys = window.MiniSys || {};
+
+    // 编译器入口函数
+    function compileInterface(source) {
         try {
             const tokens = tokenize(source);
             const parser = new Parser(tokens);
@@ -520,7 +524,11 @@ module.exports = {
             const compiler = new Compiler();
             return compiler.compile(ast); 
         } catch(e) {
-            return `Error: ${e.message}`;
+            console.error(e);
+            throw new Error(`编译错误: ${e.message}`); // 抛出错误让 main.js 捕获
         }
-    } 
-};
+    }
+
+    // 挂载 compile 方法
+    window.MiniSys.compile = compileInterface;
+})();
