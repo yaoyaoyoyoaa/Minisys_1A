@@ -1,150 +1,180 @@
 `timescale 1ns / 1ps
-// minisys_top.v - 适配 Vivado IP 核版 (inst_rom + pll)
-module minisys_top(
-    input  wire        board_clk,      // 板载 100MHz 时钟 (Y18)
-    input  wire        board_rst,      // 板载复位 (P20)
-    
-    input  wire        rx,
-    output wire        tx,
-    
-    // 数码管接口
+// minisys_top.v - 完全移植标准版
+// 2020-11 @ https://github.com/seu-cs-class2/minisys-1a-cpu
+`include "public.v"
+
+module minisys_top (
+    input  wire        board_rst,      // 板上重置 (P20)
+    input  wire        board_clk,      // 板上时钟 (Y18, 100MHz)
+
+    // 拨码开关
+    input  wire [23:0] switches_in,
+    // 按钮
+    input  wire [4:0]  buttons_in,
+    // 矩阵键盘
+    input  wire [3:0]  keyboard_cols_in,
+    output wire [3:0]  keyboard_rows_out,
+    // 数码管
     output wire [7:0]  digits_sel_out,
     output wire [7:0]  digits_data_out,
-    
-    // 拨码开关 & 按钮
-    input  wire [23:0] switches_in,
-    input  wire [4:0]  buttons_in,
-    
-    // LED 灯
+    // 蜂鸣器
+    output wire        beep_out,
+    // LED灯
     output wire [7:0]  led_RLD_out,
     output wire [7:0]  led_YLD_out,
     output wire [7:0]  led_GLD_out,
-    
-    // 蜂鸣器 & 矩阵键盘
-    output wire        beep_out,
-    input  wire [3:0]  keyboard_cols_in,
-    output wire [3:0]  keyboard_rows_out
+
+    input  wire        rx,             // UART接收 (Y19)
+    output wire        tx              // UART发送 (V18)
 );
 
-    // =========================================================
-    // 1. 时钟管理 (调用 Clocking Wizard IP "pll")
-    // =========================================================
     wire cpu_clk;
-    wire locked; // 如果您在 IP 设置中取消了 locked，可忽略此信号
-    
-    // 实例化 pll IP
-    // 注意：如果您取消了 reset 或 locked 勾选，请删除对应的端口连接行
-    pll u_clocking (
-        .clk_in1(board_clk),
-        .clk_out1(cpu_clk), // 10MHz 输出
-        .reset(1'b0),       // 如果您的 IP 有 reset 端口，请接 1'b0 或 board_rst
-        .locked(locked)     // 如果您的 IP 有 locked 端口
-    );
+    wire uart_clk;
+    wire rst;
 
-    // 复位逻辑
-   // 尝试反转极性：如果板载按键是按下为0 (Active Low)，则需要取反
-// 我们先只用 board_rst 测试，暂时断开 buttons_in[0] 以排除干扰
-    wire sys_rst = board_rst;
-    wire sys_rst_req;
-    wire global_rst = sys_rst | sys_rst_req; // 高电平复位
+    // 1. 串口下载启动逻辑
+    // 关键：upg_rst 决定了系统是处于“等待下载”还是“正常运行”状态
+    wire spg_bufg;
+    BUFG U1(.I(buttons_in[3]), .O(spg_bufg)); 
 
-    // =========================================================
-    // 2. 内部信号定义
-    // =========================================================
-    wire [31:0] imem_addr;
-    wire [31:0] imem_rdata;
-    
-    wire [31:0] dmem_addr;
-    wire [31:0] dmem_wdata;
-    wire [31:0] dmem_rdata_cpu;
-    wire        dmem_we;
-    wire [3:0]  dmem_wstrb;
-    wire [5:0]  ext_int;
-    
-    wire [31:0] ram_rdata;
-    wire [31:0] mmio_rdata;
-    
-    // 地址空间解码
-    wire is_mmio = (dmem_addr[31:16] == 16'hFFFF);
-    wire is_ram  = (dmem_addr[31:16] == 16'h0000);
-
-    // =========================================================
-    // 3. CPU 核心
-    // =========================================================
-    cpu_core u_cpu(
-        .clk(cpu_clk),
-        .rst(global_rst),
-        .ext_int(ext_int),
-        .imem_addr(imem_addr),
-        .imem_rdata(imem_rdata),
-        .dmem_addr(dmem_addr),
-        .dmem_wdata(dmem_wdata),
-        .dmem_we(dmem_we),
-        .dmem_wstrb(dmem_wstrb),
-        .dmem_rdata(dmem_rdata_cpu),
-        .dbg_pc()
-    );
-
-  // =========================================================
-    // 4. 指令存储器 (改为 Distributed Memory Generator IP)
-    // =========================================================
-    // 深度 2048 -> 地址线宽度 11位 ([10:0])
-    // CPU地址 imem_addr 是字节地址，所以取 [12:2]
-    inst_rom u_inst_rom (
-      .a(imem_addr[12:2]),      // 输入地址 (注意端口名变成了 a)
-      .spo(imem_rdata)          // 输出数据 (注意端口名变成了 spo)
-    );
-    // =========================================================
-    // 5. 数据存储器 (分布式 RAM)
-    // =========================================================
-    reg [31:0] data_mem [0:16383]; // 64KB RAM
-    assign ram_rdata = data_mem[dmem_addr[15:2]];
-
-    always @(posedge cpu_clk) begin
-        if (dmem_we && is_ram) begin
-            if(dmem_wstrb[0]) data_mem[dmem_addr[15:2]][7:0]   <= dmem_wdata[7:0];
-            if(dmem_wstrb[1]) data_mem[dmem_addr[15:2]][15:8]  <= dmem_wdata[15:8];
-            if(dmem_wstrb[2]) data_mem[dmem_addr[15:2]][23:16] <= dmem_wdata[23:16];
-            if(dmem_wstrb[3]) data_mem[dmem_addr[15:2]][31:24] <= dmem_wdata[31:24];
-        end
+    reg upg_rst;
+    always @(posedge board_clk) begin
+        if (spg_bufg)  upg_rst <= 0; // 按下按键3，解除锁定进入运行模式
+        if (board_rst) upg_rst <= 1; // 按下复位，进入串口等待模式
     end
-
-    // =========================================================
-    // 6. MMIO 外设互联
-    // =========================================================
-    wire [1:0]  timer_int_vec;
-    wire [23:0] led_combined;
-    wire        pwm_out_dummy;
     
-    mmio_if u_mmio(
-        .clk(cpu_clk),
-        .rst(global_rst),
-        .we(dmem_we && is_mmio),
-        .be(dmem_wstrb),
-        .addr(dmem_addr),
-        .wdata(dmem_wdata),
-        .rdata(mmio_rdata),
-        
-        .switches(switches_in),
-        .col(keyboard_cols_in),
-        
-        .led_out(led_combined),
-        .seg_out(digits_data_out),
-        .an_out(digits_sel_out),
-        .row(keyboard_rows_out),
-        .beep_out(beep_out),
-        .pwm_out(pwm_out_dummy),
-        
-        .wdg_rst_req(sys_rst_req),
-        .timer_int(timer_int_vec)
+    // 系统复位信号：板载复位 OR 串口未就绪
+    assign rst = board_rst | !upg_rst;
+
+    // 2. 时钟分频 IP (Clocking Wizard)
+    clocking u_clocking(
+        .clk_in1(board_clk),   // 100MHz
+        .cpu_clk(cpu_clk),     // 标准版通常为 5MHz
+        .uart_clk(uart_clk)    // 10MHz
     );
 
-    assign led_RLD_out = led_combined[23:16];
-    assign led_YLD_out = led_combined[15:8];
-    assign led_GLD_out = led_combined[7:0];
+    // 3. 内部总线与信号
+    wire upg_clk_o, upg_wen_o, upg_done_o;
+    wire [14:0] upg_adr_o;
+    wire [31:0] upg_dat_o;
 
-    assign tx = 1'b1;
-    assign dmem_rdata_cpu = is_mmio ? mmio_rdata : ram_rdata;
-    assign ext_int = {4'b0, timer_int_vec}; 
+    wire [`WordRange] cpu_imem_data_in;
+    wire [`WordRange] cpu_imem_addr_out;
+    wire cpu_imem_e_out;
+
+    wire [`WordRange] bus_addr, bus_write_data, bus_read_data;
+    wire bus_eable, bus_we;
+    wire [3:0] bus_byte_sel;
+
+    wire [`WordRange] ram_data, seven_display_data, keyboard_data, led_light_data, switch_data, buzzer_data;
+
+    // 4. UART 串口下载 IP (必须安装)
+    uart_bmpg_0 u_uartpg(
+        .upg_clk_i(uart_clk),
+        .upg_rst_i(upg_rst),
+        .upg_clk_o(upg_clk_o),
+        .upg_wen_o(upg_wen_o),
+        .upg_adr_o(upg_adr_o),
+        .upg_dat_o(upg_dat_o),
+        .upg_done_o(upg_done_o),
+        .upg_rx_i(rx),
+        .upg_tx_o(tx)
+    );
+
+    // 5. CPU 核心
+    cpu u_cpu (
+        .rst(rst),
+        .clk(cpu_clk),
+        .imem_data_in(cpu_imem_data_in),
+        .imem_addr_out(cpu_imem_addr_out),
+        .imem_e_out(cpu_imem_e_out),
+        .bus_addr_out(bus_addr),
+        .bus_write_data_out(bus_write_data),
+        .bus_eable_out(bus_eable),
+        .bus_we_out(bus_we),
+        .bus_byte_sel_out(bus_byte_sel),
+        .bus_read_in(bus_read_data),
+        .interrupt_in(6'b0) // 简化处理，中断置零
+    );
+
+    // 6. 指令 ROM (带时钟反相与下载切换)
+    // 关键：kickOff 逻辑确保下载完后 ROM 才归 CPU
+    wire kickOff = upg_rst | (~upg_rst & upg_done_o);
+    
+    rom u_rom(
+        .clk(~cpu_clk),            // 标准版核心秘籍：内存时钟反相
+        .addr(cpu_imem_addr_out),
+        .data_out(cpu_imem_data_in),
+        .upg_rst(upg_rst),
+        .upg_clk(upg_clk_o),
+        .upg_wen(upg_wen_o & !upg_adr_o[14]),
+        .upg_adr(upg_adr_o[13:0]),
+        .upg_dat(upg_dat_o),
+        .upg_done(upg_done_o)
+    );
+
+    // 7. 数据 RAM (支持串口改写)
+    ram u_ram(
+        .clk(~cpu_clk),
+        .eable(bus_eable),
+        .we(bus_we),
+        .addr(bus_addr),
+        .byte_sel(bus_byte_sel),
+        .data_in(bus_write_data),
+        .data_out(ram_data),
+        .upg_rst(upg_rst),
+        .upg_clk(upg_clk_o),
+        .upg_wen(upg_wen_o & upg_adr_o[14]),
+        .upg_adr(upg_adr_o[13:0]),
+        .upg_dat(upg_dat_o),
+        .upg_done(upg_done_o)
+    );
+
+    // 8. 仲裁与外设连接
+    arbitration u_abt(
+        .clk(~cpu_clk),
+        .ram_data(ram_data),
+        .seven_display_data(seven_display_data),
+        .keyboard_data(keyboard_data),
+        .counter_data(32'hFFFFFFFF),
+        .pwm_data(32'hFFFFFFFF),
+        .uart_data(32'hFFFFFFFF),
+        .watch_dog_data(32'hFFFFFFFF),
+        .led_light_data(led_light_data),
+        .switch_data(switch_data),
+        .buzzer_data(32'hFFFFFFFF),
+        .addr(bus_addr),
+        .data_out(bus_read_data)
+    );
+
+    leds u_leds(
+        .rst(rst), .clk(~cpu_clk), .addr(bus_addr), .en(bus_eable),
+        .byte_sel(bus_byte_sel), .data_in(bus_write_data), .we(bus_we),
+        .data_out(led_light_data), .RLD(led_RLD_out), .YLD(led_YLD_out), .GLD(led_GLD_out)
+    );
+
+    switches u_switches(
+        .rst(rst), .clk(~cpu_clk), .addr(bus_addr), .en(bus_eable),
+        .byte_sel(bus_byte_sel), .data_in(bus_write_data), .we(bus_we),
+        .data_out(switch_data), .switch_in(switches_in)
+    );
+
+    keyboard u_keyboard(
+        .rst(rst), .clk(~cpu_clk), .addr(bus_addr), .en(bus_eable),
+        .byte_sel(bus_byte_sel), .data_in(bus_write_data), .we(bus_we),
+        .data_out(keyboard_data), .cols(keyboard_cols_in), .rows(keyboard_rows_out)
+    );
+
+    digits u_digits(
+        .rst(rst), .clk(~cpu_clk), .addr(bus_addr), .en(bus_eable),
+        .byte_sel(bus_byte_sel), .data_in(bus_write_data), .we(bus_we),
+        .data_out(seven_display_data), .sel_out(digits_sel_out), .digital_out(digits_data_out)
+    );
+
+    beep u_beep(
+        .rst(rst), .clk(~cpu_clk), .addr(bus_addr), .en(bus_eable),
+        .byte_sel(bus_byte_sel), .data_in(bus_write_data), .we(bus_we),
+        .data_out(buzzer_data), .signal_out(beep_out)
+    );
 
 endmodule
